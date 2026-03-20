@@ -26,6 +26,10 @@ class MainWindow(QMainWindow):
         self.trigger_level = 0.0
         self.show_fft = True
         
+        # Buffer para suavizado espectral (Persistancia)
+        self.fft_smoothed = None
+        self.fft_alpha = 0.15 # Factor de suavizado (0.0 a 1.0)
+        
         self._init_ui()
         self._connect_signals()
         
@@ -174,10 +178,15 @@ class MainWindow(QMainWindow):
     def on_wave_changed(self, text):
         wave_map = {"Seno": "sine", "Cuadrada": "square", "Diente de Sierra": "sawtooth", "Ruido": "noise"}
         self.orchestrator.generator.update_params(wave_type=wave_map[text])
+        # No hace falta set_input_source, el worker ya usa la función del generador
+        # que leerá el nuevo wave_type en el siguiente ciclo.
 
     def on_serial_mode_changed(self, text):
         mode = "raw" if "RAW" in text else "fft"
         self.orchestrator.serial_in.mode = mode
+        # Forzar reinicio para aplicar modo
+        if self.orchestrator.current_source == 'serial':
+            self.orchestrator.set_input_source('serial', force_restart=True)
 
     def refresh_serial_ports(self):
         """Escanea y actualiza la lista de puertos seriales."""

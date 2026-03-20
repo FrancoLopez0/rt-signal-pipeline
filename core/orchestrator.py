@@ -42,15 +42,15 @@ class Orchestrator(QObject):
         self.current_plugin = None
         self.current_plugin_name = None
 
-    def set_input_source(self, source_type: str):
-        """Cambia la fuente de entrada: 'generator', 'audio', 'serial'."""
-        # Si la fuente es serial, asegurarnos de que el puerto esté configurado
-        if source_type == 'serial' and not self.serial_in.port:
-            self.error_occurred.emit("No se ha seleccionado un puerto serial.")
-            return
-
+    def set_input_source(self, source_type: str, force_restart=False):
+        """Cambia la fuente de entrada. Solo reinicia el worker si el tipo cambia o se fuerza."""
+        is_same_type = self.current_source == source_type
         self.current_source = source_type
         
+        # Si es el mismo tipo y no forzamos, no hacemos nada (el generador se actualiza solo)
+        if is_same_type and not force_restart and "acquisition" in self.workers:
+            return
+
         # 1. Detener el worker de adquisición actual si existe
         self._stop_worker("acquisition")
 
@@ -65,14 +65,14 @@ class Orchestrator(QObject):
             self.audio_in.start()
             source_func = self.audio_in.get_chunk
         elif source_type == 'serial':
+            if not self.serial_in.port: return
             if self.serial_in.start():
                 source_func = self.serial_in.get_chunk
             else:
                 self.error_occurred.emit(f"No se pudo abrir el puerto serial {self.serial_in.port}")
                 return
 
-        # 3. Re-crear y arrancar el worker de adquisición si el pipeline está "activo"
-        # O si simplemente queremos que empiece a fluir (el pipeline entero se arranca con start_pipeline)
+        # 3. Arrancar el worker si el pipeline está activo
         if source_func and "processing" in self.workers:
             self._start_acquisition_worker(source_func)
 

@@ -138,10 +138,18 @@ class OutputWorker(PipelineWorker):
             outdata.fill(0)
 
     def run(self):
-        """Bucle de control (mantiene el hilo vivo, el audio real corre en el callback)."""
+        """Bucle de control. Mantiene el pipeline fluido consumiendo la cola."""
         self._running = True
         while self._running:
-            time.sleep(0.1) # El trabajo real lo hace el callback
+            if not self.audio_out_enabled:
+                try:
+                    # Si el audio está apagado, vaciamos la cola para que no se bloquee el pipeline
+                    self.in_queue.get(timeout=0.05)
+                except queue.Empty:
+                    pass
+            else:
+                # Si el audio está encendido, el callback se encarga de vaciar la cola
+                time.sleep(0.1)
                 
         if self.stream:
             self.stream.stop()

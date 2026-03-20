@@ -1,4 +1,8 @@
 import numpy as np
+try:
+    from scipy import signal as sp_signal
+except ImportError:
+    sp_signal = None
 
 class SignalGenerator:
     """Generador de señales sintéticas para pruebas (Seno, Cuadrada, Sawtooth, Ruido)."""
@@ -17,16 +21,15 @@ class SignalGenerator:
         # Generación base según el tipo de onda
         if self.wave_type == 'sine':
             signal = self.amplitude * np.sin(2 * np.pi * self.frequency * t + self.phase)
-        elif self.wave_type == 'square':
-            from scipy import signal as sp_signal
+        elif self.wave_type == 'square' and sp_signal:
             signal = self.amplitude * sp_signal.square(2 * np.pi * self.frequency * t + self.phase)
-        elif self.wave_type == 'sawtooth':
-            from scipy import signal as sp_signal
+        elif self.wave_type == 'sawtooth' and sp_signal:
             signal = self.amplitude * sp_signal.sawtooth(2 * np.pi * self.frequency * t + self.phase)
         elif self.wave_type == 'noise':
             signal = np.random.normal(0, self.amplitude, chunk_size)
         else:
-            signal = np.zeros(chunk_size)
+            # Fallback a seno si no hay scipy o tipo desconocido
+            signal = self.amplitude * np.sin(2 * np.pi * self.frequency * t + self.phase)
             
         # Sumar ruido blanco adicional si está activado
         if self.noise_level > 0 and self.wave_type != 'noise':
