@@ -95,11 +95,33 @@ class MainWindow(QMainWindow):
         # Controles Serial
         self.group_serial = QFrame()
         serial_layout = QVBoxLayout(self.group_serial)
+        
+        serial_layout.addWidget(QLabel("Puerto:"))
+        port_layout = QHBoxLayout()
+        self.combo_port = QComboBox()
+        port_layout.addWidget(self.combo_port)
+        self.btn_refresh_ports = QPushButton("↻")
+        self.btn_refresh_ports.setFixedWidth(30)
+        self.btn_refresh_ports.clicked.connect(self.refresh_serial_ports)
+        port_layout.addWidget(self.btn_refresh_ports)
+        serial_layout.addLayout(port_layout)
+        
+        serial_layout.addWidget(QLabel("Velocidad (Bauds):"))
+        self.combo_baud = QComboBox()
+        self.combo_baud.addItems(["9600", "19200", "38400", "57600", "115200", "230400", "460800", "921600"])
+        self.combo_baud.setCurrentText("115200")
+        serial_layout.addWidget(self.combo_baud)
+        
         serial_layout.addWidget(QLabel("Modo Serial:"))
         self.combo_serial_mode = QComboBox()
         self.combo_serial_mode.addItems(["Audio RAW", "FFT x,y"])
         self.combo_serial_mode.currentTextChanged.connect(self.on_serial_mode_changed)
         serial_layout.addWidget(self.combo_serial_mode)
+        
+        # Conectar cambios de config serial
+        self.combo_port.currentTextChanged.connect(lambda p: self.orchestrator.update_serial_params(port=p))
+        self.combo_baud.currentTextChanged.connect(lambda b: self.orchestrator.update_serial_params(baudrate=b))
+        
         self.group_serial.hide()
         sidebar_layout.addWidget(self.group_serial)
         
@@ -157,10 +179,27 @@ class MainWindow(QMainWindow):
         mode = "raw" if "RAW" in text else "fft"
         self.orchestrator.serial_in.mode = mode
 
+    def refresh_serial_ports(self):
+        """Escanea y actualiza la lista de puertos seriales."""
+        from core.inputs.serial_in import SerialInput
+        ports = SerialInput.get_available_ports()
+        current = self.combo_port.currentText()
+        self.combo_port.blockSignals(True) # Evitar disparar cambios durante el borrado
+        self.combo_port.clear()
+        self.combo_port.addItems(ports)
+        if current in ports:
+            self.combo_port.setCurrentText(current)
+        elif ports:
+            self.combo_port.setCurrentIndex(0)
+        self.combo_port.blockSignals(False)
+
     def _connect_signals(self):
         self.orchestrator.data_acquired.connect(self.update_input_plot)
         self.orchestrator.data_processed.connect(self.update_output_plot)
         self.orchestrator.error_occurred.connect(self.show_error)
+        
+        # Escaneo inicial de puertos
+        self.refresh_serial_ports()
 
     def toggle_trigger(self):
         self.trigger_enabled = self.btn_trigger.isChecked()
@@ -217,16 +256,37 @@ class MainWindow(QMainWindow):
             if x: self.fft_curve.setData(x, y)
 
     def update_fft(self, data):
-        """Calcula y grafica la FFT de los datos locales."""
+        """Calcula y grafica la FFT de los datos locales con enventanado y suavizado."""
         try:
             n = len(data)
+            if n < 2: return
+            
+            # 1. Aplicar ventana de Hanning para reducir fugas espectrales
+            window = np.hanning(n)
+            windowed_data = data * window
+            
+            # 2. Calcular FFT real
             freqs = np.fft.rfftfreq(n, d=1/self.orchestrator.sample_rate)
-            mag = np.abs(np.fft.rfft(data))
-            # Normalizar y filtrar DC si es necesario
-            mag = 20 * np.log10(mag + 1e-6) # dB
-            self.fft_curve.setData(freqs[1:], mag[1:])
-        except Exception:
-            pass
+            mag = np.abs(np.fft.rfft(windowed_data))
+            
+            # 3. Convertir a dB con protección contra ceros
+            mag_db = 20 * np.log10(mag + 1e-6)
+            
+            # 4. Suavizado Temporal (Filtro de Persistencia)
+            if self.fft_smoothed is None or len(self.fft_smoothed) != len(mag_db):
+                self.fft_smoothed = mag_db
+            else:
+                # mag_db_new = alpha * actual + (1-alpha) * previa
+                self.fft_smoothed = self.fft_alpha * mag_db + (1 - self.fft_alpha) * self.fft_smoothed
+            
+            # 5. Dibujar (frecuencias a partir de la 1 para ignorar DC)
+            self.fft_curve.setData(freqs[1:], self.fft_smoothed[1:])
+            
+            # 6. Fijar rango Y para estabilidad visual
+            self.fft_plot.setYRange(-60, 40)
+            
+        except Exception as e:
+            print(f"Error en FFT: {e}")
 
     def on_load_plugin_clicked(self):
         file_path, _ = QFileDialog.getOpenFileName(

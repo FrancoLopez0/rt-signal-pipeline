@@ -85,7 +85,7 @@ class ProcessingWorker(PipelineWorker):
         self.finished.emit()
 
 class OutputWorker(PipelineWorker):
-    """Hilo de salida: Reproducción de audio y consumo final."""
+    """Hilo de salida: Reproducción de audio basada en callback de hardware."""
     def __init__(self, in_queue, sample_rate=44100, chunk_size=1024):
         super().__init__()
         self.in_queue = in_queue
@@ -93,17 +93,21 @@ class OutputWorker(PipelineWorker):
         self.chunk_size = chunk_size
         self.audio_out_enabled = False
         self.stream = None
+        # Pequeño buffer circular interno para suavizar el jitter de las colas
+        self.playback_buffer = np.zeros(0, dtype=np.float32)
 
     def toggle_audio(self, enabled):
         """Activa/Desactiva la salida de audio por hardware."""
         self.audio_out_enabled = enabled
         if enabled:
             import sounddevice as sd
+            # Usamos un callback para que el hardware pida datos cuando esté listo
             self.stream = sd.OutputStream(
                 samplerate=self.sample_rate,
                 blocksize=self.chunk_size,
                 channels=1,
-                dtype='float32'
+                dtype='float32',
+                callback=self._audio_callback
             )
             self.stream.start()
         elif self.stream:
@@ -111,23 +115,33 @@ class OutputWorker(PipelineWorker):
             self.stream.close()
             self.stream = None
 
+    def _audio_callback(self, outdata, frames, time, status):
+        """Callback del hardware de sonido. Se ejecuta en un hilo de alta prioridad."""
+        if status:
+            print(f"Audio Output Status: {status}")
+            
+        # Intentamos obtener datos de nuestro buffer interno o de la cola
+        try:
+            # Si el buffer interno está vacío, intentamos llenarlo de la cola
+            while len(self.playback_buffer) < frames:
+                chunk = self.in_queue.get_nowait()
+                self.playback_buffer = np.append(self.playback_buffer, chunk)
+        except queue.Empty:
+            pass
+
+        # Llenar outdata
+        if len(self.playback_buffer) >= frames:
+            outdata[:frames, 0] = self.playback_buffer[:frames]
+            self.playback_buffer = self.playback_buffer[frames:]
+        else:
+            # Underflow: Rellenar con silencio si no hay datos suficientes
+            outdata.fill(0)
+
     def run(self):
+        """Bucle de control (mantiene el hilo vivo, el audio real corre en el callback)."""
         self._running = True
         while self._running:
-            try:
-                data = self.in_queue.get(timeout=0.05)
-                # Si el audio está habilitado, escribir en el stream de hardware
-                if self.audio_out_enabled and self.stream:
-                    # Nos aseguramos de que el array tenga la forma correcta para sd.write
-                    # sounddevice espera (frames, channels)
-                    audio_data = data.reshape(-1, 1).astype(np.float32)
-                    self.stream.write(audio_data)
-                    
-            except queue.Empty:
-                continue
-            except Exception as e:
-                self.error.emit(f"Error en Salida Audio: {str(e)}")
-                break
+            time.sleep(0.1) # El trabajo real lo hace el callback
                 
         if self.stream:
             self.stream.stop()
