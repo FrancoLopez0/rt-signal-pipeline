@@ -1,0 +1,261 @@
+import os
+import numpy as np
+import pyqtgraph as pg
+from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
+                             QPushButton, QFileDialog, QLabel, QFrame, QSplitter, 
+                             QMessageBox, QComboBox, QCheckBox)
+from PyQt6.QtCore import Qt, pyqtSlot
+from core.orchestrator import Orchestrator
+
+class MainWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("RT Signal Pipeline - PyQt DSP")
+        self.resize(1200, 900)
+        
+        # El Orquestador (Presenter)
+        self.orchestrator = Orchestrator()
+        
+        # Buffers para visualización
+        self.buffer_size = 8192 
+        self.display_size = 1024 
+        self.input_buffer = np.zeros(self.buffer_size)
+        self.output_buffer = np.zeros(self.buffer_size)
+        
+        self.trigger_enabled = True
+        self.trigger_level = 0.0
+        self.show_fft = True
+        
+        self._init_ui()
+        self._connect_signals()
+        
+        # Iniciar pipeline con bypass por defecto
+        self.load_plugin_file("plugins/bypass.py")
+        self.orchestrator.start_pipeline()
+
+    def _init_ui(self):
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        main_layout = QHBoxLayout(central_widget)
+        
+        # Splitter para separar gráficos de controles
+        self.splitter = QSplitter(Qt.Orientation.Horizontal)
+        main_layout.addWidget(self.splitter)
+        
+        # --- PANEL DE GRÁFICOS ---
+        graph_container = QWidget()
+        graph_layout = QVBoxLayout(graph_container)
+        
+        # Configuración de pyqtgraph
+        pg.setConfigOptions(antialias=True)
+        
+        # Gráficos de Tiempo
+        self.input_plot = pg.PlotWidget(title="Entrada (Tiempo) - Trigger: Zero Crossing")
+        self.input_curve = self.input_plot.plot(pen='y')
+        self.input_plot.setYRange(-1.1, 1.1)
+        self.input_plot.showGrid(x=True, y=True)
+        graph_layout.addWidget(self.input_plot)
+        
+        self.output_plot = pg.PlotWidget(title="Procesada (Tiempo)")
+        self.output_curve = self.output_plot.plot(pen='c')
+        self.output_plot.setYRange(-1.1, 1.1)
+        self.output_plot.showGrid(x=True, y=True)
+        graph_layout.addWidget(self.output_plot)
+        
+        # Gráfico de Frecuencia (FFT)
+        self.fft_plot = pg.PlotWidget(title="Espectro de Frecuencia (FFT / x,y)")
+        self.fft_curve = self.fft_plot.plot(pen='m')
+        self.fft_plot.setLogMode(x=True, y=False)
+        self.fft_plot.showGrid(x=True, y=True)
+        graph_layout.addWidget(self.fft_plot)
+        
+        # --- PANEL DE CONTROL (SIDEBAR) ---
+        self.sidebar = QFrame()
+        self.sidebar.setFrameShape(QFrame.Shape.StyledPanel)
+        self.sidebar.setMinimumWidth(300)
+        sidebar_layout = QVBoxLayout(self.sidebar)
+        
+        # Selección de Entrada
+        sidebar_layout.addWidget(QLabel("<b>Fuente de Entrada</b>"))
+        self.combo_source = QComboBox()
+        self.combo_source.addItems(["Generador", "Audio (Mic)", "Serial (USB)"])
+        self.combo_source.currentIndexChanged.connect(self.on_source_changed)
+        sidebar_layout.addWidget(self.combo_source)
+        
+        # Controles del Generador
+        self.group_gen = QFrame()
+        gen_layout = QVBoxLayout(self.group_gen)
+        gen_layout.addWidget(QLabel("Tipo de Onda:"))
+        self.combo_wave = QComboBox()
+        self.combo_wave.addItems(["Seno", "Cuadrada", "Diente de Sierra", "Ruido"])
+        self.combo_wave.currentTextChanged.connect(self.on_wave_changed)
+        gen_layout.addWidget(self.combo_wave)
+        sidebar_layout.addWidget(self.group_gen)
+        
+        # Controles Serial
+        self.group_serial = QFrame()
+        serial_layout = QVBoxLayout(self.group_serial)
+        serial_layout.addWidget(QLabel("Modo Serial:"))
+        self.combo_serial_mode = QComboBox()
+        self.combo_serial_mode.addItems(["Audio RAW", "FFT x,y"])
+        self.combo_serial_mode.currentTextChanged.connect(self.on_serial_mode_changed)
+        serial_layout.addWidget(self.combo_serial_mode)
+        self.group_serial.hide()
+        sidebar_layout.addWidget(self.group_serial)
+        
+        sidebar_layout.addSpacing(10)
+        sidebar_layout.addWidget(QLabel("<b>Visualización / Audio</b>"))
+        
+        # Trigger Toggle
+        self.btn_trigger = QPushButton("Trigger: ON")
+        self.btn_trigger.setCheckable(True)
+        self.btn_trigger.setChecked(True)
+        self.btn_trigger.clicked.connect(self.toggle_trigger)
+        sidebar_layout.addWidget(self.btn_trigger)
+        
+        # Audio Out Toggle
+        self.check_audio_out = QCheckBox("Salida de Audio (Hardware)")
+        self.check_audio_out.toggled.connect(self.orchestrator.toggle_audio_output)
+        sidebar_layout.addWidget(self.check_audio_out)
+        
+        sidebar_layout.addSpacing(10)
+        sidebar_layout.addWidget(QLabel("<b>Gestión de Plugins</b>"))
+        self.btn_load = QPushButton("Cargar Plugin (.py)")
+        self.btn_load.clicked.connect(self.on_load_plugin_clicked)
+        sidebar_layout.addWidget(self.btn_load)
+        
+        # Espacio para la UI dinámica del Plugin
+        sidebar_layout.addSpacing(20)
+        sidebar_layout.addWidget(QLabel("<b>Interfaz del Plugin</b>"))
+        self.plugin_ui_container = QFrame()
+        self.plugin_ui_container.setFrameShape(QFrame.Shape.Box)
+        self.plugin_ui_layout = QVBoxLayout(self.plugin_ui_container)
+        sidebar_layout.addWidget(self.plugin_ui_container)
+        
+        sidebar_layout.addStretch()
+        
+        # Agregar al splitter
+        self.splitter.addWidget(graph_container)
+        self.splitter.addWidget(self.sidebar)
+        self.splitter.setStretchFactor(0, 3)
+        self.splitter.setStretchFactor(1, 1)
+
+    def on_source_changed(self, index):
+        sources = ['generator', 'audio', 'serial']
+        source = sources[index]
+        self.orchestrator.set_input_source(source)
+        
+        # Mostrar/Ocultar controles específicos
+        self.group_gen.setVisible(source == 'generator')
+        self.group_serial.setVisible(source == 'serial')
+
+    def on_wave_changed(self, text):
+        wave_map = {"Seno": "sine", "Cuadrada": "square", "Diente de Sierra": "sawtooth", "Ruido": "noise"}
+        self.orchestrator.generator.update_params(wave_type=wave_map[text])
+
+    def on_serial_mode_changed(self, text):
+        mode = "raw" if "RAW" in text else "fft"
+        self.orchestrator.serial_in.mode = mode
+
+    def _connect_signals(self):
+        self.orchestrator.data_acquired.connect(self.update_input_plot)
+        self.orchestrator.data_processed.connect(self.update_output_plot)
+        self.orchestrator.error_occurred.connect(self.show_error)
+
+    def toggle_trigger(self):
+        self.trigger_enabled = self.btn_trigger.isChecked()
+        self.btn_trigger.setText(f"Trigger: {'ON' if self.trigger_enabled else 'OFF'}")
+
+    def _apply_trigger(self, data_buffer):
+        """Busca el primer cruce por cero ascendente para estabilizar la señal."""
+        if not self.trigger_enabled:
+            return data_buffer[-self.display_size:]
+            
+        # Buscar cruce por cero (de negativo a positivo)
+        # Buscamos en la primera mitad del buffer para tener margen de visualización
+        search_range = self.buffer_size - self.display_size
+        indices = np.where((data_buffer[:search_range-1] < self.trigger_level) & 
+                           (data_buffer[1:search_range] >= self.trigger_level))[0]
+        
+        if len(indices) > 0:
+            start_idx = indices[0]
+            return data_buffer[start_idx : start_idx + self.display_size]
+        
+        return data_buffer[-self.display_size:]
+
+    @pyqtSlot(object)
+    def update_input_plot(self, data):
+        self.input_buffer = np.roll(self.input_buffer, -len(data))
+        self.input_buffer[-len(data):] = data
+        
+        display_data = self._apply_trigger(self.input_buffer)
+        self.input_curve.setData(display_data)
+
+    @pyqtSlot(object)
+    def update_output_plot(self, data):
+        # Actualizar buffer de tiempo
+        self.output_buffer = np.roll(self.output_buffer, -len(data))
+        self.output_buffer[-len(data):] = data
+        
+        # Graficar tiempo con trigger
+        display_data = self._apply_trigger(self.output_buffer)
+        self.output_curve.setData(display_data)
+        
+        # Graficar FFT (si no estamos en modo serial FFT x,y)
+        if self.orchestrator.current_source != 'serial' or self.orchestrator.serial_in.mode == 'raw':
+            self.update_fft(display_data)
+        else:
+            # En modo serial FFT, los datos 'data' ya son x,y
+            # Extraer x,y de los objetos recibidos
+            x = []
+            y = []
+            if isinstance(data, np.ndarray):
+                for d in data:
+                    if isinstance(d, tuple) and len(d) >= 2:
+                        x.append(d[0])
+                        y.append(d[1])
+            if x: self.fft_curve.setData(x, y)
+
+    def update_fft(self, data):
+        """Calcula y grafica la FFT de los datos locales."""
+        try:
+            n = len(data)
+            freqs = np.fft.rfftfreq(n, d=1/self.orchestrator.sample_rate)
+            mag = np.abs(np.fft.rfft(data))
+            # Normalizar y filtrar DC si es necesario
+            mag = 20 * np.log10(mag + 1e-6) # dB
+            self.fft_curve.setData(freqs[1:], mag[1:])
+        except Exception:
+            pass
+
+    def on_load_plugin_clicked(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Seleccionar Plugin", "plugins", "Python Files (*.py)"
+        )
+        if file_path:
+            self.load_plugin_file(file_path)
+
+    def load_plugin_file(self, path):
+        # Limpiar UI anterior de forma segura
+        for i in reversed(range(self.plugin_ui_layout.count())): 
+            item = self.plugin_ui_layout.itemAt(i)
+            if item.widget():
+                item.widget().setParent(None)
+            
+        # Cargar nuevo plugin vía orquestador
+        plugin_ui = self.orchestrator.load_plugin(path)
+        if plugin_ui:
+            self.plugin_ui_layout.addWidget(plugin_ui)
+            self.statusBar().showMessage(f"Plugin cargado: {os.path.basename(path)}")
+        else:
+            # Si el orquestador no emite el error, lo forzamos aquí
+            self.show_error(f"No se pudo cargar el plugin: {os.path.basename(path)}")
+
+    def show_error(self, message):
+        """Muestra un diálogo de error y actualiza la barra de estado."""
+        self.statusBar().showMessage(f"ERROR: {message}")
+        QMessageBox.critical(self, "Error de Pipeline", message)
+
+    def closeEvent(self, event):
+        self.orchestrator.stop_pipeline()
+        event.accept()
