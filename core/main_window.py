@@ -3,7 +3,7 @@ import numpy as np
 import pyqtgraph as pg
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                              QPushButton, QFileDialog, QLabel, QFrame, QSplitter, 
-                             QMessageBox, QComboBox, QCheckBox)
+                             QMessageBox, QComboBox, QCheckBox, QSlider)
 from PyQt6.QtCore import Qt, pyqtSlot
 from core.orchestrator import Orchestrator
 
@@ -89,11 +89,31 @@ class MainWindow(QMainWindow):
         # Controles del Generador
         self.group_gen = QFrame()
         gen_layout = QVBoxLayout(self.group_gen)
+        
         gen_layout.addWidget(QLabel("Tipo de Onda:"))
         self.combo_wave = QComboBox()
         self.combo_wave.addItems(["Seno", "Cuadrada", "Diente de Sierra", "Ruido"])
         self.combo_wave.currentTextChanged.connect(self.on_wave_changed)
         gen_layout.addWidget(self.combo_wave)
+        
+        # Frecuencia
+        self.lbl_freq = QLabel("Frecuencia: 440 Hz")
+        gen_layout.addWidget(self.lbl_freq)
+        self.slider_freq = QSlider(Qt.Orientation.Horizontal)
+        self.slider_freq.setRange(20, 5000)
+        self.slider_freq.setValue(440)
+        self.slider_freq.valueChanged.connect(self.on_freq_changed)
+        gen_layout.addWidget(self.slider_freq)
+        
+        # Amplitud
+        self.lbl_amp = QLabel("Amplitud: 0.50")
+        gen_layout.addWidget(self.lbl_amp)
+        self.slider_amp = QSlider(Qt.Orientation.Horizontal)
+        self.slider_amp.setRange(0, 100)
+        self.slider_amp.setValue(50)
+        self.slider_amp.valueChanged.connect(self.on_amp_changed)
+        gen_layout.addWidget(self.slider_amp)
+        
         sidebar_layout.addWidget(self.group_gen)
         
         # Controles Serial
@@ -178,8 +198,15 @@ class MainWindow(QMainWindow):
     def on_wave_changed(self, text):
         wave_map = {"Seno": "sine", "Cuadrada": "square", "Diente de Sierra": "sawtooth", "Ruido": "noise"}
         self.orchestrator.generator.update_params(wave_type=wave_map[text])
-        # No hace falta set_input_source, el worker ya usa la función del generador
-        # que leerá el nuevo wave_type en el siguiente ciclo.
+
+    def on_freq_changed(self, value):
+        self.lbl_freq.setText(f"Frecuencia: {value} Hz")
+        self.orchestrator.generator.update_params(frequency=float(value))
+
+    def on_amp_changed(self, value):
+        amp = value / 100.0
+        self.lbl_amp.setText(f"Amplitud: {amp:.2f}")
+        self.orchestrator.generator.update_params(amplitude=amp)
 
     def on_serial_mode_changed(self, text):
         mode = "raw" if "RAW" in text else "fft"
