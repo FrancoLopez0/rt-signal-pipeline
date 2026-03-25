@@ -142,6 +142,11 @@ class MainWindow(QMainWindow):
         self.combo_serial_mode.currentTextChanged.connect(self.on_serial_mode_changed)
         serial_layout.addWidget(self.combo_serial_mode)
         
+        self.btn_connect = QPushButton("Conectar")
+        self.btn_connect.setCheckable(True)
+        self.btn_connect.clicked.connect(self.toggle_serial_connection)
+        serial_layout.addWidget(self.btn_connect)
+        
         # Conectar cambios de config serial
         self.combo_port.currentTextChanged.connect(lambda p: self.orchestrator.update_serial_params(port=p))
         self.combo_baud.currentTextChanged.connect(lambda b: self.orchestrator.update_serial_params(baudrate=b))
@@ -189,7 +194,26 @@ class MainWindow(QMainWindow):
     def on_source_changed(self, index):
         sources = ['generator', 'audio', 'serial']
         source = sources[index]
-        self.orchestrator.set_input_source(source)
+        
+        # Siempre detener worker de adquisición anterior antes de cambiar
+        if "acquisition" in self.orchestrator.workers:
+            self.orchestrator._stop_worker("acquisition")
+        
+        # Si había una conexión serial activa, desconectar
+        if self.orchestrator.serial_in.ser:
+            try:
+                self.orchestrator.serial_in.data_updated.disconnect(self.update_serial_plot)
+            except TypeError:
+                pass  # Señal no estaba conectada
+            self.orchestrator.serial_in.stop()
+            self.btn_connect.setText("Conectar")
+            self.btn_connect.setChecked(False)
+        
+        # Para serial, no llamar set_input_source (el botón Conectar lo maneja)
+        if source != 'serial':
+            self.orchestrator.set_input_source(source)
+        
+        self.orchestrator.current_source = source
         
         # Mostrar/Ocultar controles específicos
         self.group_gen.setVisible(source == 'generator')
@@ -229,6 +253,30 @@ class MainWindow(QMainWindow):
             self.combo_port.setCurrentIndex(0)
         self.combo_port.blockSignals(False)
 
+    def toggle_serial_connection(self):
+        """Conecta o desconecta el puerto serial."""
+        if not self.orchestrator.serial_in.ser:
+            # Conectar
+            port = self.combo_port.currentText()
+            baudrate = int(self.combo_baud.currentText())
+            self.orchestrator.serial_in.update_config(port=port, baudrate=baudrate)
+            
+            if self.orchestrator.serial_in.start():
+                # Conectar señal para actualizar gráfico en tiempo real
+                self.orchestrator.serial_in.data_updated.connect(self.update_serial_plot)
+                self.btn_connect.setText("Desconectar")
+                self.statusBar().showMessage(f"Serial conectado: {port}")
+            else:
+                self.btn_connect.setChecked(False)
+                self.statusBar().showMessage("Error: No se pudo conectar al puerto serial")
+        else:
+            # Desconectar
+            self.orchestrator.serial_in.data_updated.disconnect(self.update_serial_plot)
+            self.orchestrator.serial_in.stop()
+            self.btn_connect.setText("Conectar")
+            self.btn_connect.setChecked(False)
+            self.statusBar().showMessage("Serial desconectado")
+
     def _connect_signals(self):
         self.orchestrator.data_acquired.connect(self.update_input_plot)
         self.orchestrator.data_processed.connect(self.update_output_plot)
@@ -265,6 +313,14 @@ class MainWindow(QMainWindow):
         
         display_data = self._apply_trigger(self.input_buffer)
         self.input_curve.setData(display_data)
+
+    @pyqtSlot(np.ndarray)
+    def update_serial_plot(self, data):
+        """Actualiza el gráfico de entrada con datos del serial (deque)."""
+        self.input_curve.setData(data)
+        # También actualizar el buffer interno para mantener sincronía
+        self.input_buffer = np.roll(self.input_buffer, -len(data))
+        self.input_buffer[-len(data):] = data
 
     @pyqtSlot(object)
     def update_output_plot(self, data):

@@ -65,12 +65,10 @@ class Orchestrator(QObject):
             self.audio_in.start()
             source_func = self.audio_in.get_chunk
         elif source_type == 'serial':
-            if not self.serial_in.port: return
-            if self.serial_in.start():
-                source_func = self.serial_in.get_chunk
-            else:
-                self.error_occurred.emit(f"No se pudo abrir el puerto serial {self.serial_in.port}")
-                return
+            # No iniciar automáticamente - el botón "Conectar" lo maneja
+            # Solo actualizar el flag interno
+            self.current_source = 'serial'
+            return
 
         # 3. Arrancar el worker si el pipeline está activo
         if source_func and "processing" in self.workers:
