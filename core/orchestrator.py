@@ -1,6 +1,7 @@
 import queue
 import importlib.util
 import os
+from functools import partial
 from PyQt6.QtCore import QObject, QThread, pyqtSignal
 from core.threads import AcquisitionWorker, ProcessingWorker, OutputWorker
 from core.inputs.generator_in import SignalGenerator
@@ -108,18 +109,28 @@ class Orchestrator(QObject):
             ui = self.current_plugin.get_ui()
             dsp = self.current_plugin.get_dsp()
             
-            # Conectar señales de la UI al DSP para actualización de parámetros
-            ui.parameter_changed.connect(lambda name, val: dsp.update_parameter(name, val))
+            # Guardar referencia al DSP para uso en conexión
+            self._current_dsp = dsp
+            
+            # Conectar señales de la UI al DSP usando functools.partial para evitar problemas de closure
+            ui.parameter_changed.connect(partial(self._on_plugin_param_changed, dsp))
             
             # Actualizar el Worker de procesamiento si está activo
             if "processing" in self.workers:
                 self.workers["processing"].set_plugin_dsp(dsp)
+                print(f"[Orchestrator] Plugin DSP configurado: {module_name}")
+            else:
+                print(f"[Orchestrator] Plugin cargado (DSP pendiente): {module_name}")
                 
             return ui
             
         except Exception as e:
             self.error_occurred.emit(f"Error cargando plugin: {str(e)}")
             return None
+
+    def _on_plugin_param_changed(self, dsp, name, value):
+        """Callback para parámetros de plugin. Usa referencia directa al DSP."""
+        dsp.update_parameter(name, value)
 
     def start_pipeline(self):
         """Arranca todos los hilos del pipeline."""

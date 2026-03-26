@@ -16,12 +16,14 @@ def test_serial_deque_functionality():
     # Verificar que el deque tiene maxlen=1024
     assert serial.data_buffer.maxlen == 1024
     
-    # Verificar que get_data retorna un numpy array
+    # Verificar que get_data retorna un numpy array de tamaño fijo (chunk_size)
     data = serial.get_data()
     assert isinstance(data, np.ndarray)
-    assert len(data) == 100
-    assert data[0] == 0.0
-    assert data[-1] == 99.0
+    assert len(data) == 1024  # Siempre retorna chunk_size
+    
+    # Los últimos 100 elementos deben ser 0-99, los primeros 924 son ceros (relleno)
+    assert data[0] == 0.0  # Primer elemento es cero (relleno)
+    assert data[-1] == 99.0  # Último elemento es 99
 
 def test_serial_deque_sliding_window():
     """Verifica que el deque descarta valores antiguos cuando está lleno."""
@@ -58,7 +60,7 @@ def test_serial_input_queue_integration():
     assert not test_queue.empty()
     queued_data = test_queue.get_nowait()
     assert isinstance(queued_data, np.ndarray)
-    assert len(queued_data) == 5
+    assert len(queued_data) == 1024  # Siempre chunk_size
 
 def test_serial_with_plugin_processing(qtbot):
     """Verifica que datos seriales pasan por el pipeline de plugins."""

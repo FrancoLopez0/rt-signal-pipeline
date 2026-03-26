@@ -3,6 +3,7 @@ import serial.tools.list_ports
 import numpy as np
 import threading
 import queue
+import time
 from collections import deque
 from PyQt6.QtCore import QObject, pyqtSignal
 
@@ -10,16 +11,20 @@ class SerialInput(QObject):
     """Adquisición de datos desde puerto serial (Arduino, ESP32, etc.)."""
     data_updated = pyqtSignal(np.ndarray)  # Señal emitida cuando llega un dato
     
-    def __init__(self, port=None, baudrate=115200, mode='raw', input_queue=None):
+    def __init__(self, port=None, baudrate=115200, mode='raw', input_queue=None, chunk_size=1024, emit_interval=0.05):
         super().__init__()
         self.port = port
         self.baudrate = baudrate
         self.mode = mode  # 'raw' para audio, 'fft' para x,y
         self.ser = None
         self.running = False
-        self.data_buffer = deque(maxlen=1024)  # Ventana deslizante de 1024 valores
+        self.chunk_size = chunk_size  # Tamaño fijo de chunk para consistencia
+        self.emit_interval = emit_interval  # Intervalo mínimo entre emisiones (segundos)
+        self.data_buffer = deque(maxlen=chunk_size)  # Ventana deslizante de chunk_size
+        self.chunk_array = np.zeros(chunk_size, dtype=np.float32)  # Pre-allocado para eficiencia
         self.thread = None
         self.input_queue = input_queue  # queue.Queue for plugin pipeline
+        self._last_emit_time = 0  # Para throttling
 
     def set_queue(self, queue):
         """Set the input queue for plugin pipeline integration."""
@@ -76,18 +81,26 @@ class SerialInput(QObject):
                         value = float(line)
                         print(f"[Serial] Dato: {value}")
                         
-                        # Agregar al buffer (descarte automático de antiguos)
+                        # Agregar al buffer (descarte automático de antiguos cuando lleno)
                         self.data_buffer.append(value)
                         
-                        # Emitir señal con buffer completo para graficar
-                        self.data_updated.emit(self.get_data())
-
-                        # Put into pipeline queue for plugin processing
-                        if self.input_queue:
-                            try:
-                                self.input_queue.put_nowait(self.get_data())
-                            except queue.Full:
-                                pass  # Don't block if queue is full
+                        # Throttling: solo emitir cada emit_interval segundos
+                        current_time = time.perf_counter()
+                        if current_time - self._last_emit_time >= self.emit_interval:
+                            self._last_emit_time = current_time
+                            
+                            # Crear y emitir chunk
+                            chunk = self._make_chunk()
+                            
+                            # Emitir para graficar
+                            self.data_updated.emit(chunk)
+                            
+                            # Put into pipeline queue for plugin processing
+                            if self.input_queue:
+                                try:
+                                    self.input_queue.put_nowait(chunk)
+                                except queue.Full:
+                                    pass
 
                     except ValueError:
                         continue
@@ -95,6 +108,30 @@ class SerialInput(QObject):
                 print(f"Error en lectura serial: {e}")
                 break
 
+    def _make_chunk(self) -> np.ndarray:
+        """Crea un chunk de tamaño fijo usando los datos del buffer (optimizado)."""
+        buffer_len = len(self.data_buffer)
+        
+        if buffer_len == 0:
+            return self.chunk_array  # Retornar array de ceros pre-allocado
+        
+        # Limpiar array y copiar datos directamente
+        self.chunk_array.fill(0)
+        
+        if buffer_len >= self.chunk_size:
+            # Buffer tiene suficientes datos - copiar últimos chunk_size elementos
+            # Usar iterador para eficiencia
+            start_idx = buffer_len - self.chunk_size
+            for i, val in enumerate(list(self.data_buffer)[start_idx:]):
+                self.chunk_array[i] = val
+        else:
+            # Buffer tiene menos datos, centrar en el chunk
+            start_idx = self.chunk_size - buffer_len
+            for i, val in enumerate(self.data_buffer):
+                self.chunk_array[start_idx + i] = val
+        
+        return self.chunk_array
+
     def get_data(self) -> np.ndarray:
-        """Retorna el buffer actual como array numpy."""
-        return np.array(self.data_buffer, dtype=np.float32)
+        """Retorna el buffer actual como array numpy de tamaño fijo."""
+        return self._make_chunk()

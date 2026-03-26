@@ -3,7 +3,8 @@ import numpy as np
 import pyqtgraph as pg
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                              QPushButton, QFileDialog, QLabel, QFrame, QSplitter, 
-                             QMessageBox, QComboBox, QCheckBox, QSlider, QTabWidget)
+                             QMessageBox, QComboBox, QCheckBox, QSlider, QTabWidget,
+                             QSpinBox, QDoubleSpinBox)
 from PyQt6.QtCore import Qt, pyqtSlot
 from core.orchestrator import Orchestrator
 
@@ -25,12 +26,24 @@ class MainWindow(QMainWindow):
         self.trigger_enabled = True
         self.trigger_level = 0.0
         self.show_fft = True
+        self.scatter_mode = False
         
         # Buffer para suavizado espectral (Persistancia)
         self.fft_smoothed = None
         self.fft_alpha = 0.15 # Factor de suavizado (0.0 a 1.0)
         
+        # Sistema de double-buffering para evitar bloqueos de UI
+        self._input_data_ready = False
+        self._output_data_ready = False
+        self._pending_input_data = None
+        self._pending_output_data = None
+        
+        # Pre-allocated arrays para evitar allocations en cada frame
+        self._display_input = np.zeros(1024, dtype=np.float32)
+        self._display_output = np.zeros(1024, dtype=np.float32)
+        
         self._init_ui()
+        self._apply_styles()
         self._connect_signals()
         
         # Iniciar pipeline con bypass por defecto
@@ -54,30 +67,70 @@ class MainWindow(QMainWindow):
         self.graph_tabs = QTabWidget()
         graph_layout.addWidget(self.graph_tabs)
         
-        # Configuración de pyqtgraph
-        pg.setConfigOptions(antialias=True)
+        # Configuración de pyqtgraph - Tema Oscuro High-Tech
+        # Opciones para optimizar rendimiento
+        pg.setConfigOptions(antialias=False, background='#0d1117', foreground='#c9d1d9')
+        pg.setConfigOption('leftButtonPan', False)  # Deshabilitar pan para mejor rendimiento
+        
+        # Rangos iniciales
+        self.plot_y_min = -1000.0
+        self.plot_y_max = 1000.0
+        self.plot_x_max = 1024  # Ventana de visualización
+        
+        # Colores de las señales
+        self.pen_input = pg.mkPen(color='#f0e68c', width=1.5)      # Amarillo dorado
+        self.pen_output = pg.mkPen(color='#00d9ff', width=1.5)      # Cyan brillante
+        self.pen_fft = pg.mkPen(color='#00ff88', width=1.5)          # Verde neón
         
         # ===== TAB 1: Tiempo Separado =====
         tab_separado = QWidget()
+        tab_separado.setStyleSheet("background-color: #0d1117;")
         tab_separado_layout = QVBoxLayout(tab_separado)
+        tab_separado_layout.setContentsMargins(4, 4, 4, 4)
         
-        self.input_plot = pg.PlotWidget(title="Entrada (Tiempo) - Trigger: Zero Crossing")
-        self.input_curve = self.input_plot.plot(pen='y')
-        self.input_plot.setYRange(-1.1, 1.1)
-        self.input_plot.showGrid(x=True, y=True)
+        # Plot de entrada
+        self.input_plot = pg.PlotWidget(title="<span style='color: #f0e68c;'>⬤</span> Entrada (Tiempo) - Trigger: Zero Crossing")
+        self.input_plot.setStyleSheet("background-color: #161b22; border-radius: 6px;")
+        self.input_plot.setLimits(xMin=0, xMax=self.plot_x_max*2, yMin=-10000, yMax=10000)  # Limitar rangos
+        self.input_plot.setXRange(0, self.plot_x_max, padding=0)
+        self.input_plot.setYRange(self.plot_y_min, self.plot_y_max, padding=0)
+        self.input_plot.showGrid(x=True, y=True, alpha=0.3)
+        self.input_plot.getAxis('bottom').setPen('#484f58')
+        self.input_plot.getAxis('left').setPen('#484f58')
+        self.input_plot.getAxis('bottom').setTextPen('#8b949e')
+        self.input_plot.getAxis('left').setTextPen('#8b949e')
+        # Crear curva line y scatter para entrada
+        self.input_curve = self.input_plot.plot(pen=self.pen_input, clipToView=False)
+        self.input_scatter = pg.ScatterPlotItem(pen=None, brush='#f0e68c', size=3, symbol='o')
         tab_separado_layout.addWidget(self.input_plot)
         
-        self.output_plot = pg.PlotWidget(title="Procesada (Tiempo)")
-        self.output_curve = self.output_plot.plot(pen='c')
-        self.output_plot.setYRange(-1.1, 1.1)
-        self.output_plot.showGrid(x=True, y=True)
+        # Plot de salida
+        self.output_plot = pg.PlotWidget(title="<span style='color: #00d9ff;'>⬤</span> Procesada (Tiempo)")
+        self.output_plot.setStyleSheet("background-color: #161b22; border-radius: 6px;")
+        self.output_plot.setLimits(xMin=0, xMax=self.plot_x_max*2, yMin=-10000, yMax=10000)
+        self.output_plot.setXRange(0, self.plot_x_max, padding=0)
+        self.output_plot.setYRange(self.plot_y_min, self.plot_y_max, padding=0)
+        self.output_plot.showGrid(x=True, y=True, alpha=0.3)
+        self.output_plot.getAxis('bottom').setPen('#484f58')
+        self.output_plot.getAxis('left').setPen('#484f58')
+        self.output_plot.getAxis('bottom').setTextPen('#8b949e')
+        self.output_plot.getAxis('left').setTextPen('#8b949e')
+        # Crear curva line y scatter para salida
+        self.output_curve = self.output_plot.plot(pen=self.pen_output, clipToView=False)
+        self.output_scatter = pg.ScatterPlotItem(pen=None, brush='#00d9ff', size=3, symbol='o')
         tab_separado_layout.addWidget(self.output_plot)
         
         # FFT plot
-        self.fft_plot = pg.PlotWidget(title="Espectro de Frecuencia (FFT / x,y)")
-        self.fft_curve = self.fft_plot.plot(pen='m')
+        self.fft_plot = pg.PlotWidget(title="<span style='color: #00ff88;'>⬤</span> Espectro de Frecuencia (FFT)")
+        self.fft_plot.setStyleSheet("background-color: #161b22; border-radius: 6px;")
+        self.fft_curve = self.fft_plot.plot(pen=self.pen_fft, clipToView=False)
         self.fft_plot.setLogMode(x=True, y=False)
-        self.fft_plot.showGrid(x=True, y=True)
+        self.fft_plot.showGrid(x=True, y=True, alpha=0.3)
+        self.fft_plot.getAxis('bottom').setPen('#484f58')
+        self.fft_plot.getAxis('left').setPen('#484f58')
+        self.fft_plot.getAxis('bottom').setTextPen('#8b949e')
+        self.fft_plot.getAxis('left').setTextPen('#8b949e')
+        self.fft_plot.setYRange(-60, 40, padding=0)
         self.fft_plot.setVisible(False)
         tab_separado_layout.addWidget(self.fft_plot)
         
@@ -85,25 +138,46 @@ class MainWindow(QMainWindow):
         
         # ===== TAB 2: Combinado (Entrada + Salida en un solo gráfico) =====
         tab_combinado = QWidget()
+        tab_combinado.setStyleSheet("background-color: #0d1117;")
         tab_combinado_layout = QVBoxLayout(tab_combinado)
+        tab_combinado_layout.setContentsMargins(4, 4, 4, 4)
         
         self.combined_plot = pg.PlotWidget(title="Entrada y Salida Combinadas")
-        # Dos curvas en el mismo gráfico
-        self.combined_input_curve = self.combined_plot.plot(pen='y', name="Entrada")  # Yellow
-        self.combined_output_curve = self.combined_plot.plot(pen='c', name="Salida")  # Cyan
-        self.combined_plot.setYRange(-1.1, 1.1)
-        self.combined_plot.showGrid(x=True, y=True)
+        self.combined_plot.setStyleSheet("background-color: #161b22; border-radius: 6px;")
+        self.combined_plot.setLimits(xMin=0, xMax=self.plot_x_max*2, yMin=-10, yMax=10)
+        self.combined_plot.setXRange(0, self.plot_x_max, padding=0)
+        self.combined_plot.setYRange(self.plot_y_min, self.plot_y_max, padding=0)
+        self.combined_plot.showGrid(x=True, y=True, alpha=0.3)
+        self.combined_plot.getAxis('bottom').setPen('#484f58')
+        self.combined_plot.getAxis('left').setPen('#484f58')
+        self.combined_plot.getAxis('bottom').setTextPen('#8b949e')
+        self.combined_plot.getAxis('left').setTextPen('#8b949e')
+        # dos curvas line y scatter para combinado
+        self.combined_input_curve = self.combined_plot.plot(pen=self.pen_input, clipToView=False, name='<span style="color: #f0e68c;">●</span> Entrada')
+        self.combined_input_scatter = pg.ScatterPlotItem(pen=None, brush='#f0e68c', size=3, symbol='o')
+        self.combined_output_curve = self.combined_plot.plot(pen=self.pen_output, clipToView=False, name='<span style="color: #00d9ff;">●</span> Salida')
+        self.combined_output_scatter = pg.ScatterPlotItem(pen=None, brush='#00d9ff', size=3, symbol='o')
         # Agregar leyenda
-        self.combined_plot.addLegend()
+        self.combined_plot.addLegend(offset=(10, 10))
         tab_combinado_layout.addWidget(self.combined_plot)
         
         self.graph_tabs.addTab(tab_combinado, "Combinado")
         
         # --- PANEL DE CONTROL (SIDEBAR) ---
         self.sidebar = QFrame()
-        self.sidebar.setFrameShape(QFrame.Shape.StyledPanel)
-        self.sidebar.setMinimumWidth(300)
+        self.sidebar.setObjectName("sidebar")
+        self.sidebar.setMinimumWidth(320)
+        self.sidebar.setStyleSheet("""
+            QFrame#sidebar {
+                background-color: #161b22;
+                border-left: 2px solid #30363d;
+                border-radius: 0px;
+                padding: 12px;
+            }
+        """)
         sidebar_layout = QVBoxLayout(self.sidebar)
+        sidebar_layout.setContentsMargins(12, 16, 12, 12)
+        sidebar_layout.setSpacing(10)
         
         # Selección de Entrada
         sidebar_layout.addWidget(QLabel("<b>Fuente de Entrada</b>"))
@@ -196,6 +270,12 @@ class MainWindow(QMainWindow):
         self.check_fft.toggled.connect(self.toggle_fft_visibility)
         sidebar_layout.addWidget(self.check_fft)
         
+        # Scatter Mode Toggle
+        self.check_scatter = QCheckBox("Modo Scatter")
+        self.check_scatter.setChecked(False)
+        self.check_scatter.toggled.connect(self.toggle_scatter_mode)
+        sidebar_layout.addWidget(self.check_scatter)
+        
         # Controles de Ventana Y
         sidebar_layout.addSpacing(5)
         y_range_label = QLabel("Rango Y:")
@@ -204,11 +284,13 @@ class MainWindow(QMainWindow):
         y_range_layout = QHBoxLayout()
         self.lbl_y_min = QLabel("-1.0")
         y_range_layout.addWidget(self.lbl_y_min)
-        self.slider_y_max = QSlider(Qt.Orientation.Horizontal)
-        self.slider_y_max.setRange(-100000, 10000)
-        self.slider_y_max.setValue(10)  # Representa +1.0
-        self.slider_y_max.valueChanged.connect(self.on_y_range_changed)
-        y_range_layout.addWidget(self.slider_y_max)
+        y_range_layout.addWidget(QLabel("to"))
+        self.spin_y_max = QDoubleSpinBox()
+        self.spin_y_max.setRange(0.1, 10.0)
+        self.spin_y_max.setValue(1.0)
+        self.spin_y_max.setDecimals(1)
+        self.spin_y_max.valueChanged.connect(self.on_y_range_changed)
+        y_range_layout.addWidget(self.spin_y_max)
         self.lbl_y_max = QLabel("1.0")
         y_range_layout.addWidget(self.lbl_y_max)
         sidebar_layout.addLayout(y_range_layout)
@@ -219,13 +301,11 @@ class MainWindow(QMainWindow):
         sidebar_layout.addWidget(x_range_label)
         
         x_range_layout = QHBoxLayout()
-        self.slider_x_range = QSlider(Qt.Orientation.Horizontal)
-        self.slider_x_range.setRange(256, 1024)
-        self.slider_x_range.setValue(1024)
-        self.slider_x_range.valueChanged.connect(self.on_x_range_changed)
-        x_range_layout.addWidget(self.slider_x_range)
-        self.lbl_x_range = QLabel("1024")
-        x_range_layout.addWidget(self.lbl_x_range)
+        self.spin_x_range = QSpinBox()
+        self.spin_x_range.setRange(256, 8192)
+        self.spin_x_range.setValue(1024)
+        self.spin_x_range.valueChanged.connect(self.on_x_range_changed)
+        x_range_layout.addWidget(self.spin_x_range)
         sidebar_layout.addLayout(x_range_layout)
         
         # Audio Out Toggle
@@ -349,6 +429,292 @@ class MainWindow(QMainWindow):
         # Escaneo inicial de puertos
         self.refresh_serial_ports()
 
+    def _apply_styles(self):
+        """Aplica estilo visual moderno 'High-Tech Lab' a la aplicación."""
+        # Configurar pyqtgraph con colores del tema
+        pg.setConfigOption('background', '#1a1a2e')
+        pg.setConfigOption('foreground', '#e8e8e8')
+        
+        self.setStyleSheet("""
+            /* ===== ESTILO HIGH-TECH LAB ===== */
+            
+            QMainWindow {
+                background-color: #0d1117;
+            }
+            
+            QWidget {
+                background-color: #0d1117;
+                color: #c9d1d9;
+                font-family: 'Segoe UI', 'SF Pro Display', sans-serif;
+                font-size: 13px;
+            }
+            
+            /* Paneles y frames */
+            QFrame {
+                background-color: #161b22;
+                border: 1px solid #30363d;
+                border-radius: 8px;
+                padding: 8px;
+            }
+            
+            /* Labels */
+            QLabel {
+                color: #c9d1d9;
+                background-color: transparent;
+                padding: 2px;
+            }
+            
+            QLabel[heading="true"] {
+                font-weight: bold;
+                color: #58a6ff;
+                font-size: 14px;
+            }
+            
+            /* Botones */
+            QPushButton {
+                background-color: #21262d;
+                color: #c9d1d9;
+                border: 1px solid #30363d;
+                border-radius: 6px;
+                padding: 8px 16px;
+                font-weight: 500;
+                min-height: 20px;
+            }
+            
+            QPushButton:hover {
+                background-color: #30363d;
+                border-color: #58a6ff;
+                color: #58a6ff;
+            }
+            
+            QPushButton:pressed {
+                background-color: #1f6feb;
+                border-color: #1f6feb;
+                color: #ffffff;
+            }
+            
+            QPushButton:checked {
+                background-color: #1f6feb;
+                border-color: #1f6feb;
+                color: #ffffff;
+            }
+            
+            QPushButton:disabled {
+                background-color: #21262d;
+                color: #484f58;
+                border-color: #21262d;
+            }
+            
+            /* ComboBox */
+            QComboBox {
+                background-color: #0d1117;
+                color: #c9d1d9;
+                border: 1px solid #30363d;
+                border-radius: 6px;
+                padding: 8px 12px;
+                min-height: 20px;
+            }
+            
+            QComboBox:hover {
+                border-color: #58a6ff;
+            }
+            
+            QComboBox::drop-down {
+                border: none;
+                width: 30px;
+            }
+            
+            QComboBox::down-arrow {
+                image: none;
+                border-left: 5px solid transparent;
+                border-right: 5px solid transparent;
+                border-top: 5px solid #8b949e;
+                margin-right: 10px;
+            }
+            
+            QComboBox QAbstractItemView {
+                background-color: #0d1117;
+                color: #c9d1d9;
+                border: 1px solid #30363d;
+                selection-background-color: #1f6feb;
+                padding: 4px;
+            }
+            
+            /* Checkboxes */
+            QCheckBox {
+                color: #c9d1d9;
+                spacing: 10px;
+                padding: 4px;
+            }
+            
+            QCheckBox::indicator {
+                width: 18px;
+                height: 18px;
+                border: 2px solid #30363d;
+                border-radius: 4px;
+                background-color: #0d1117;
+            }
+            
+            QCheckBox::indicator:hover {
+                border-color: #58a6ff;
+            }
+            
+            QCheckBox::indicator:checked {
+                background-color: #1f6feb;
+                border-color: #1f6feb;
+            }
+            
+            QCheckBox::indicator:checked:hover {
+                background-color: #388bfd;
+            }
+            
+            /* SpinBoxes */
+            QSpinBox, QDoubleSpinBox {
+                background-color: #0d1117;
+                color: #58a6ff;
+                border: 1px solid #30363d;
+                border-radius: 6px;
+                padding: 6px 10px;
+                min-height: 20px;
+            }
+            
+            QSpinBox:hover, QDoubleSpinBox:hover {
+                border-color: #58a6ff;
+            }
+            
+            QSpinBox::up-button, QDoubleSpinBox::up-button {
+                border: none;
+                width: 16px;
+                background-color: transparent;
+            }
+            
+            QSpinBox::down-button, QDoubleSpinBox::down-button {
+                border: none;
+                width: 16px;
+                background-color: transparent;
+            }
+            
+            QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {
+                image: none;
+                border-left: 4px solid transparent;
+                border-right: 4px solid transparent;
+                border-bottom: 4px solid #8b949e;
+            }
+            
+            QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {
+                image: none;
+                border-left: 4px solid transparent;
+                border-right: 4px solid transparent;
+                border-top: 4px solid #8b949e;
+            }
+            
+            /* Sliders */
+            QSlider::groove:horizontal {
+                border: none;
+                height: 6px;
+                background-color: #30363d;
+                border-radius: 3px;
+            }
+            
+            QSlider::handle:horizontal {
+                background-color: #58a6ff;
+                border: none;
+                width: 16px;
+                height: 16px;
+                margin: -5px 0;
+                border-radius: 8px;
+            }
+            
+            QSlider::handle:horizontal:hover {
+                background-color: #79c0ff;
+            }
+            
+            QSlider::sub-page:horizontal {
+                background-color: #1f6feb;
+                border-radius: 3px;
+            }
+            
+            /* Tabs */
+            QTabWidget::pane {
+                border: 1px solid #30363d;
+                border-radius: 8px;
+                background-color: #0d1117;
+                padding: 8px;
+            }
+            
+            QTabBar::tab {
+                background-color: #21262d;
+                color: #8b949e;
+                padding: 10px 24px;
+                margin-right: 4px;
+                border-top-left-radius: 6px;
+                border-top-right-radius: 6px;
+                font-weight: 500;
+            }
+            
+            QTabBar::tab:hover {
+                background-color: #30363d;
+                color: #c9d1d9;
+            }
+            
+            QTabBar::tab:selected {
+                background-color: #0d1117;
+                color: #58a6ff;
+                border-bottom: 2px solid #58a6ff;
+            }
+            
+            /* Scrollbars */
+            QScrollBar:vertical {
+                background-color: #0d1117;
+                width: 12px;
+                border-radius: 6px;
+            }
+            
+            QScrollBar::handle:vertical {
+                background-color: #30363d;
+                border-radius: 6px;
+                min-height: 30px;
+            }
+            
+            QScrollBar::handle:vertical:hover {
+                background-color: #484f58;
+            }
+            
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0px;
+            }
+            
+            /* Status Bar */
+            QStatusBar {
+                background-color: #161b22;
+                color: #8b949e;
+                border-top: 1px solid #30363d;
+                padding: 4px;
+            }
+            
+            /* Tooltips */
+            QToolTip {
+                background-color: #21262d;
+                color: #c9d1d9;
+                border: 1px solid #30363d;
+                border-radius: 4px;
+                padding: 4px;
+            }
+            
+            /* Message Boxes */
+            QMessageBox {
+                background-color: #0d1117;
+            }
+            
+            QMessageBox QLabel {
+                color: #c9d1d9;
+            }
+            
+            QMessageBox QPushButton {
+                min-width: 80px;
+            }
+        """)
+
     def toggle_trigger(self):
         self.trigger_enabled = self.btn_trigger.isChecked()
         self.btn_trigger.setText(f"Trigger: {'ON' if self.trigger_enabled else 'OFF'}")
@@ -358,9 +724,38 @@ class MainWindow(QMainWindow):
         self.show_fft = checked
         self.fft_plot.setVisible(checked)
     
+    def toggle_scatter_mode(self, checked):
+        """Alterna entre modo línea y modo scatter."""
+        self.scatter_mode = checked
+        
+        # Mostrar/ocultar elementos según el modo
+        # Input plot
+        if checked:
+            self.input_plot.addItem(self.input_scatter)
+            self.input_curve.setData([])
+        else:
+            self.input_plot.removeItem(self.input_scatter)
+        
+        # Output plot
+        if checked:
+            self.output_plot.addItem(self.output_scatter)
+            self.output_curve.setData([])
+        else:
+            self.output_plot.removeItem(self.output_scatter)
+        
+        # Combined plot
+        if checked:
+            self.combined_plot.addItem(self.combined_input_scatter)
+            self.combined_plot.addItem(self.combined_output_scatter)
+            self.combined_input_curve.setData([])
+            self.combined_output_curve.setData([])
+        else:
+            self.combined_plot.removeItem(self.combined_input_scatter)
+            self.combined_plot.removeItem(self.combined_output_scatter)
+    
     def on_y_range_changed(self, value):
         """Actualiza el rango Y de los gráficos de tiempo."""
-        y_max = value / 10.0
+        y_max = value
         y_min = -y_max
         self.lbl_y_min.setText(f"{-y_max:.1f}")
         self.lbl_y_max.setText(f"{y_max:.1f}")
@@ -372,7 +767,6 @@ class MainWindow(QMainWindow):
     
     def on_x_range_changed(self, value):
         """Actualiza la cantidad de muestras visibles en X."""
-        self.lbl_x_range.setText(str(value))
         self.display_size = value
         # Actualizar el rango del eje X
         self.input_plot.setXRange(0, value)
@@ -398,66 +792,61 @@ class MainWindow(QMainWindow):
 
     @pyqtSlot(object)
     def update_input_plot(self, data):
-        self.input_buffer = np.roll(self.input_buffer, -len(data))
+        """Callback de datos de entrada - actualiza gráficos directamente."""
+        # Actualizar buffer - sin np.roll, el deque ya maneja la ventana
         self.input_buffer[-len(data):] = data
         
+        # Calcular datos para display
         display_data = self._apply_trigger(self.input_buffer)
-        self.input_curve.setData(display_data)
         
-        # Also update combined plot
-        self.combined_input_curve.setData(display_data)
+        # Actualizar según modo scatter o line
+        if self.scatter_mode:
+            x_data = np.arange(len(display_data))
+            self.input_scatter.setData(x_data, display_data)
+            self.combined_input_scatter.setData(x_data, display_data)
+        else:
+            self.input_curve.setData(display_data)
+            self.combined_input_curve.setData(display_data)
 
     @pyqtSlot(np.ndarray)
     def update_serial_plot(self, data):
-        """Actualiza el gráfico de entrada con datos del serial (deque)."""
-        # Actualizar buffer de entrada
-        self.input_buffer = np.roll(self.input_buffer, -len(data))
+        """Actualiza el gráfico de entrada con datos del serial."""
+        # Actualizar buffer sin np.roll
         self.input_buffer[-len(data):] = data
         
-        # Plot de entrada separado
-        self.input_curve.setData(data)
-        
-        # Plot combinado de entrada
-        self.combined_input_curve.setData(data)
-        
-        # Para serial, la salida procesada es la misma que la entrada (deque -> queue -> procesamiento)
-        # El output_plot se actualiza vía data_processed, pero necesitamos sincronizar el buffer
-        self.output_buffer = np.roll(self.output_buffer, -len(data))
-        self.output_buffer[-len(data):] = data
-        
-        # Plot de salida separado y combinado (serial pasa por el pipeline)
-        # El plot de salida se actualiza también por data_processed, pero aquí sincronizamos
-        display_output = self._apply_trigger(self.output_buffer)
-        self.output_curve.setData(display_output)
-        self.combined_output_curve.setData(display_output)
+        # Actualizar según modo
+        if self.scatter_mode:
+            x_data = np.arange(len(data))
+            self.input_scatter.setData(x_data, data)
+            self.combined_input_scatter.setData(x_data, data)
+        else:
+            self.input_curve.setData(data)
+            self.combined_input_curve.setData(data)
 
     @pyqtSlot(object)
     def update_output_plot(self, data):
-        # Actualizar buffer de tiempo
-        self.output_buffer = np.roll(self.output_buffer, -len(data))
+        """Callback de datos procesados - actualiza gráficos directamente."""
+        # Actualizar buffer sin np.roll
         self.output_buffer[-len(data):] = data
         
-        # Graficar tiempo con trigger
+        # Calcular datos para display
         display_data = self._apply_trigger(self.output_buffer)
-        self.output_curve.setData(display_data)
         
-        # Also update combined plot - use the same trigger alignment
-        self.combined_output_curve.setData(display_data)
+        # Actualizar según modo
+        if self.scatter_mode:
+            x_data = np.arange(len(display_data))
+            self.output_scatter.setData(x_data, display_data)
+            self.combined_output_scatter.setData(x_data, display_data)
+        else:
+            self.output_curve.setData(display_data)
+            self.combined_output_curve.setData(display_data)
         
-        # Graficar FFT (si no estamos en modo serial FFT x,y)
+        # FFT solo si no es serial FFT mode
         if self.orchestrator.current_source != 'serial' or self.orchestrator.serial_in.mode == 'raw':
             self.update_fft(display_data)
         else:
-            # En modo serial FFT, los datos 'data' ya son x,y
-            # Extraer x,y de los objetos recibidos
-            x = []
-            y = []
-            if isinstance(data, np.ndarray):
-                for d in data:
-                    if isinstance(d, tuple) and len(d) >= 2:
-                        x.append(d[0])
-                        y.append(d[1])
-            if x: self.fft_curve.setData(x, y)
+            # Serial FFT mode - los datos ya contienen x,y
+            self._update_fft_from_serial(data)
 
     def update_fft(self, data):
         """Calcula y grafica la FFT de los datos locales con enventanado y suavizado."""
@@ -485,12 +874,22 @@ class MainWindow(QMainWindow):
             
             # 5. Dibujar (frecuencias a partir de la 1 para ignorar DC)
             self.fft_curve.setData(freqs[1:], self.fft_smoothed[1:])
-            
-            # 6. Fijar rango Y para estabilidad visual
-            self.fft_plot.setYRange(-60, 40)
+            # Ya no necesitamos setYRange aquí porque está configurado en __init__
             
         except Exception as e:
             print(f"Error en FFT: {e}")
+
+    def _update_fft_from_serial(self, data):
+        """Actualiza FFT desde datos seriales que contienen x,y directamente."""
+        x = []
+        y = []
+        if isinstance(data, np.ndarray):
+            for d in data:
+                if isinstance(d, tuple) and len(d) >= 2:
+                    x.append(d[0])
+                    y.append(d[1])
+        if x:
+            self.fft_curve.setData(x, y)
 
     def on_load_plugin_clicked(self):
         file_path, _ = QFileDialog.getOpenFileName(
