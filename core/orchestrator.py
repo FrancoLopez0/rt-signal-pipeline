@@ -30,9 +30,12 @@ class Orchestrator(QObject):
         # Instancias de Input
         self.generator = SignalGenerator(self.sample_rate)
         self.audio_in = AudioInput(self.sample_rate, self.chunk_size)
-        self.serial_in = SerialInput()
+        self.serial_in = SerialInput(input_queue=self.input_queue)
         
         self.current_source = 'generator'
+        
+        # Flag para rastrear si serial está conectado al pipeline
+        self._serial_connected = False
         
         # Referencias a workers y threads
         self.workers = {}
@@ -65,10 +68,13 @@ class Orchestrator(QObject):
             self.audio_in.start()
             source_func = self.audio_in.get_chunk
         elif source_type == 'serial':
-            # No iniciar automáticamente - el botón "Conectar" lo maneja
-            # Solo actualizar el flag interno
-            self.current_source = 'serial'
-            return
+            # Serial ahora pasa por el pipeline de plugins
+            # El hilo serial ya pone datos en input_queue
+            # Conectar señal para el plot de entrada
+            if not self._serial_connected:
+                self.serial_in.data_updated.connect(self.data_acquired)
+                self._serial_connected = True
+            return  # No iniciar AcquisitionWorker - serial tiene su propio hilo
 
         # 3. Arrancar el worker si el pipeline está activo
         if source_func and "processing" in self.workers:

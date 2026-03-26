@@ -3,7 +3,7 @@ import numpy as np
 import pyqtgraph as pg
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                              QPushButton, QFileDialog, QLabel, QFrame, QSplitter, 
-                             QMessageBox, QComboBox, QCheckBox, QSlider)
+                             QMessageBox, QComboBox, QCheckBox, QSlider, QTabWidget)
 from PyQt6.QtCore import Qt, pyqtSlot
 from core.orchestrator import Orchestrator
 
@@ -46,32 +46,58 @@ class MainWindow(QMainWindow):
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
         main_layout.addWidget(self.splitter)
         
-        # --- PANEL DE GRÁFICOS ---
+        # --- PANEL DE GRÁFICOS CON TABS ---
         graph_container = QWidget()
         graph_layout = QVBoxLayout(graph_container)
+        
+        # Tab Widget para diferentes vistas
+        self.graph_tabs = QTabWidget()
+        graph_layout.addWidget(self.graph_tabs)
         
         # Configuración de pyqtgraph
         pg.setConfigOptions(antialias=True)
         
-        # Gráficos de Tiempo
+        # ===== TAB 1: Tiempo Separado =====
+        tab_separado = QWidget()
+        tab_separado_layout = QVBoxLayout(tab_separado)
+        
         self.input_plot = pg.PlotWidget(title="Entrada (Tiempo) - Trigger: Zero Crossing")
         self.input_curve = self.input_plot.plot(pen='y')
         self.input_plot.setYRange(-1.1, 1.1)
         self.input_plot.showGrid(x=True, y=True)
-        graph_layout.addWidget(self.input_plot)
+        tab_separado_layout.addWidget(self.input_plot)
         
         self.output_plot = pg.PlotWidget(title="Procesada (Tiempo)")
         self.output_curve = self.output_plot.plot(pen='c')
         self.output_plot.setYRange(-1.1, 1.1)
         self.output_plot.showGrid(x=True, y=True)
-        graph_layout.addWidget(self.output_plot)
+        tab_separado_layout.addWidget(self.output_plot)
         
-        # Gráfico de Frecuencia (FFT)
+        # FFT plot
         self.fft_plot = pg.PlotWidget(title="Espectro de Frecuencia (FFT / x,y)")
         self.fft_curve = self.fft_plot.plot(pen='m')
         self.fft_plot.setLogMode(x=True, y=False)
         self.fft_plot.showGrid(x=True, y=True)
-        graph_layout.addWidget(self.fft_plot)
+        self.fft_plot.setVisible(False)
+        tab_separado_layout.addWidget(self.fft_plot)
+        
+        self.graph_tabs.addTab(tab_separado, "Tiempo")
+        
+        # ===== TAB 2: Combinado (Entrada + Salida en un solo gráfico) =====
+        tab_combinado = QWidget()
+        tab_combinado_layout = QVBoxLayout(tab_combinado)
+        
+        self.combined_plot = pg.PlotWidget(title="Entrada y Salida Combinadas")
+        # Dos curvas en el mismo gráfico
+        self.combined_input_curve = self.combined_plot.plot(pen='y', name="Entrada")  # Yellow
+        self.combined_output_curve = self.combined_plot.plot(pen='c', name="Salida")  # Cyan
+        self.combined_plot.setYRange(-1.1, 1.1)
+        self.combined_plot.showGrid(x=True, y=True)
+        # Agregar leyenda
+        self.combined_plot.addLegend()
+        tab_combinado_layout.addWidget(self.combined_plot)
+        
+        self.graph_tabs.addTab(tab_combinado, "Combinado")
         
         # --- PANEL DE CONTROL (SIDEBAR) ---
         self.sidebar = QFrame()
@@ -163,6 +189,44 @@ class MainWindow(QMainWindow):
         self.btn_trigger.setChecked(True)
         self.btn_trigger.clicked.connect(self.toggle_trigger)
         sidebar_layout.addWidget(self.btn_trigger)
+        
+        # FFT Toggle
+        self.check_fft = QCheckBox("Mostrar FFT")
+        self.check_fft.setChecked(True)
+        self.check_fft.toggled.connect(self.toggle_fft_visibility)
+        sidebar_layout.addWidget(self.check_fft)
+        
+        # Controles de Ventana Y
+        sidebar_layout.addSpacing(5)
+        y_range_label = QLabel("Rango Y:")
+        sidebar_layout.addWidget(y_range_label)
+        
+        y_range_layout = QHBoxLayout()
+        self.lbl_y_min = QLabel("-1.0")
+        y_range_layout.addWidget(self.lbl_y_min)
+        self.slider_y_max = QSlider(Qt.Orientation.Horizontal)
+        self.slider_y_max.setRange(-100000, 10000)
+        self.slider_y_max.setValue(10)  # Representa +1.0
+        self.slider_y_max.valueChanged.connect(self.on_y_range_changed)
+        y_range_layout.addWidget(self.slider_y_max)
+        self.lbl_y_max = QLabel("1.0")
+        y_range_layout.addWidget(self.lbl_y_max)
+        sidebar_layout.addLayout(y_range_layout)
+        
+        # Controles de Ventana X
+        sidebar_layout.addSpacing(5)
+        x_range_label = QLabel("Ventana X (muestras):")
+        sidebar_layout.addWidget(x_range_label)
+        
+        x_range_layout = QHBoxLayout()
+        self.slider_x_range = QSlider(Qt.Orientation.Horizontal)
+        self.slider_x_range.setRange(256, 1024)
+        self.slider_x_range.setValue(1024)
+        self.slider_x_range.valueChanged.connect(self.on_x_range_changed)
+        x_range_layout.addWidget(self.slider_x_range)
+        self.lbl_x_range = QLabel("1024")
+        x_range_layout.addWidget(self.lbl_x_range)
+        sidebar_layout.addLayout(x_range_layout)
         
         # Audio Out Toggle
         self.check_audio_out = QCheckBox("Salida de Audio (Hardware)")
@@ -289,6 +353,32 @@ class MainWindow(QMainWindow):
         self.trigger_enabled = self.btn_trigger.isChecked()
         self.btn_trigger.setText(f"Trigger: {'ON' if self.trigger_enabled else 'OFF'}")
 
+    def toggle_fft_visibility(self, checked):
+        """Muestra u oculta el gráfico de FFT."""
+        self.show_fft = checked
+        self.fft_plot.setVisible(checked)
+    
+    def on_y_range_changed(self, value):
+        """Actualiza el rango Y de los gráficos de tiempo."""
+        y_max = value / 10.0
+        y_min = -y_max
+        self.lbl_y_min.setText(f"{-y_max:.1f}")
+        self.lbl_y_max.setText(f"{y_max:.1f}")
+        
+        # Actualizar todos los gráficos de tiempo
+        self.input_plot.setYRange(y_min, y_max)
+        self.output_plot.setYRange(y_min, y_max)
+        self.combined_plot.setYRange(y_min, y_max)
+    
+    def on_x_range_changed(self, value):
+        """Actualiza la cantidad de muestras visibles en X."""
+        self.lbl_x_range.setText(str(value))
+        self.display_size = value
+        # Actualizar el rango del eje X
+        self.input_plot.setXRange(0, value)
+        self.output_plot.setXRange(0, value)
+        self.combined_plot.setXRange(0, value)
+
     def _apply_trigger(self, data_buffer):
         """Busca el primer cruce por cero ascendente para estabilizar la señal."""
         if not self.trigger_enabled:
@@ -313,14 +403,33 @@ class MainWindow(QMainWindow):
         
         display_data = self._apply_trigger(self.input_buffer)
         self.input_curve.setData(display_data)
+        
+        # Also update combined plot
+        self.combined_input_curve.setData(display_data)
 
     @pyqtSlot(np.ndarray)
     def update_serial_plot(self, data):
         """Actualiza el gráfico de entrada con datos del serial (deque)."""
-        self.input_curve.setData(data)
-        # También actualizar el buffer interno para mantener sincronía
+        # Actualizar buffer de entrada
         self.input_buffer = np.roll(self.input_buffer, -len(data))
         self.input_buffer[-len(data):] = data
+        
+        # Plot de entrada separado
+        self.input_curve.setData(data)
+        
+        # Plot combinado de entrada
+        self.combined_input_curve.setData(data)
+        
+        # Para serial, la salida procesada es la misma que la entrada (deque -> queue -> procesamiento)
+        # El output_plot se actualiza vía data_processed, pero necesitamos sincronizar el buffer
+        self.output_buffer = np.roll(self.output_buffer, -len(data))
+        self.output_buffer[-len(data):] = data
+        
+        # Plot de salida separado y combinado (serial pasa por el pipeline)
+        # El plot de salida se actualiza también por data_processed, pero aquí sincronizamos
+        display_output = self._apply_trigger(self.output_buffer)
+        self.output_curve.setData(display_output)
+        self.combined_output_curve.setData(display_output)
 
     @pyqtSlot(object)
     def update_output_plot(self, data):
@@ -331,6 +440,9 @@ class MainWindow(QMainWindow):
         # Graficar tiempo con trigger
         display_data = self._apply_trigger(self.output_buffer)
         self.output_curve.setData(display_data)
+        
+        # Also update combined plot - use the same trigger alignment
+        self.combined_output_curve.setData(display_data)
         
         # Graficar FFT (si no estamos en modo serial FFT x,y)
         if self.orchestrator.current_source != 'serial' or self.orchestrator.serial_in.mode == 'raw':

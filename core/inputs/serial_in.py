@@ -2,6 +2,7 @@ import serial
 import serial.tools.list_ports
 import numpy as np
 import threading
+import queue
 from collections import deque
 from PyQt6.QtCore import QObject, pyqtSignal
 
@@ -9,15 +10,20 @@ class SerialInput(QObject):
     """Adquisición de datos desde puerto serial (Arduino, ESP32, etc.)."""
     data_updated = pyqtSignal(np.ndarray)  # Señal emitida cuando llega un dato
     
-    def __init__(self, port=None, baudrate=115200, mode='raw'):
+    def __init__(self, port=None, baudrate=115200, mode='raw', input_queue=None):
         super().__init__()
         self.port = port
         self.baudrate = baudrate
-        self.mode = mode # 'raw' para audio, 'fft' para x,y
+        self.mode = mode  # 'raw' para audio, 'fft' para x,y
         self.ser = None
         self.running = False
         self.data_buffer = deque(maxlen=1024)  # Ventana deslizante de 1024 valores
         self.thread = None
+        self.input_queue = input_queue  # queue.Queue for plugin pipeline
+
+    def set_queue(self, queue):
+        """Set the input queue for plugin pipeline integration."""
+        self.input_queue = queue
 
     @staticmethod
     def get_available_ports():
@@ -75,7 +81,14 @@ class SerialInput(QObject):
                         
                         # Emitir señal con buffer completo para graficar
                         self.data_updated.emit(self.get_data())
-                        
+
+                        # Put into pipeline queue for plugin processing
+                        if self.input_queue:
+                            try:
+                                self.input_queue.put_nowait(self.get_data())
+                            except queue.Full:
+                                pass  # Don't block if queue is full
+
                     except ValueError:
                         continue
             except Exception as e:

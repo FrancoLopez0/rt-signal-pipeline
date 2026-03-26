@@ -63,13 +63,29 @@ def test_available_ports_discovery():
     assert isinstance(ports, list)
 
 def test_serial_invalid_port_error():
-    """Verifica que intentar abrir un puerto inválido emita un error."""
+    """Verifica que no se intente abrir el puerto automáticamente al cambiar fuente.
+    
+    El puerto serial ahora solo se conecta cuando el usuario hace clic en "Conectar"
+    en la UI (vía toggle_serial_connection), no automáticamente al cambiar la fuente.
+    """
     orch = Orchestrator()
     errors = []
     orch.error_occurred.connect(errors.append)
     
+    # Configurar un puerto inválido
     orch.update_serial_params(port='/dev/non_existent_port_12345')
+    
+    # Cambiar a fuente serial NO debe intentar abrir el puerto automáticamente
     orch.set_input_source('serial')
     
-    assert len(errors) > 0
-    assert "No se pudo abrir el puerto serial" in errors[0]
+    # No debe haber errores porque no se intenta abrir el puerto automáticamente
+    assert len(errors) == 0
+    
+    # Verificar que serial_in.ser sigue siendo None (no conectado)
+    assert orch.serial_in.ser is None
+    
+    # Verificar que attempting_manually_to_connect_returns_error()
+    # El intento manual de conexión falla con el puerto inválido
+    result = orch.serial_in.start()
+    assert result == False  # No pudo abrir el puerto
+    assert orch.serial_in.ser is None  # sigue siendo None
