@@ -4,7 +4,7 @@ import pyqtgraph as pg
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                              QPushButton, QFileDialog, QLabel, QFrame, QSplitter, 
                              QMessageBox, QComboBox, QCheckBox, QSlider, QTabWidget,
-                             QSpinBox, QDoubleSpinBox)
+                             QSpinBox, QDoubleSpinBox, QDialog)
 from PyQt6.QtCore import Qt, pyqtSlot
 from core.orchestrator import Orchestrator
 
@@ -41,6 +41,11 @@ class MainWindow(QMainWindow):
         # Pre-allocated arrays para evitar allocations en cada frame
         self._display_input = np.zeros(1024, dtype=np.float32)
         self._display_output = np.zeros(1024, dtype=np.float32)
+        
+        # Plugin window management
+        self.plugin_window = None
+        self._plugin_ui = None
+        self.current_plugin_name = "Ninguno"
         
         self._init_ui()
         self._apply_styles()
@@ -319,13 +324,10 @@ class MainWindow(QMainWindow):
         self.btn_load.clicked.connect(self.on_load_plugin_clicked)
         sidebar_layout.addWidget(self.btn_load)
         
-        # Espacio para la UI dinámica del Plugin
-        sidebar_layout.addSpacing(20)
-        sidebar_layout.addWidget(QLabel("<b>Interfaz del Plugin</b>"))
-        self.plugin_ui_container = QFrame()
-        self.plugin_ui_container.setFrameShape(QFrame.Shape.Box)
-        self.plugin_ui_layout = QVBoxLayout(self.plugin_ui_container)
-        sidebar_layout.addWidget(self.plugin_ui_container)
+        self.btn_open_plugin_panel = QPushButton("Abrir Panel del Plugin")
+        self.btn_open_plugin_panel.clicked.connect(self._toggle_plugin_window)
+        self.btn_open_plugin_panel.setEnabled(False)
+        sidebar_layout.addWidget(self.btn_open_plugin_panel)
         
         sidebar_layout.addStretch()
         
@@ -899,19 +901,20 @@ class MainWindow(QMainWindow):
             self.load_plugin_file(file_path)
 
     def load_plugin_file(self, path):
-        # Limpiar UI anterior de forma segura
-        for i in reversed(range(self.plugin_ui_layout.count())): 
-            item = self.plugin_ui_layout.itemAt(i)
-            if item.widget():
-                item.widget().setParent(None)
+        # Cerrar ventana anterior si existe
+        if self.plugin_window is not None:
+            self.plugin_window.close()
+            self.plugin_window = None
             
         # Cargar nuevo plugin vía orquestador
         plugin_ui = self.orchestrator.load_plugin(path)
         if plugin_ui:
-            self.plugin_ui_layout.addWidget(plugin_ui)
+            self._plugin_ui = plugin_ui
+            self.current_plugin_name = os.path.basename(path)
+            self.btn_open_plugin_panel.setEnabled(True)
+            self.open_plugin_window(plugin_ui)
             self.statusBar().showMessage(f"Plugin cargado: {os.path.basename(path)}")
         else:
-            # Si el orquestador no emite el error, lo forzamos aquí
             self.show_error(f"No se pudo cargar el plugin: {os.path.basename(path)}")
 
     def show_error(self, message):
@@ -921,4 +924,39 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         self.orchestrator.stop_pipeline()
+        if self.plugin_window is not None:
+            self.plugin_window.close()
         event.accept()
+
+    def open_plugin_window(self, plugin_ui: QWidget):
+        """Abre la UI del plugin en una ventana separada."""
+        if self.plugin_window is not None:
+            self.plugin_window.close()
+            self.plugin_window = None
+        
+        self.plugin_window = QDialog(self)
+        self.plugin_window.setWindowTitle(f"Plugin: {self.current_plugin_name}")
+        self.plugin_window.setMinimumSize(400, 300)
+        self.plugin_window.setModal(False)
+        self.plugin_window.finished.connect(self._on_plugin_window_closed)
+        
+        layout = QVBoxLayout(self.plugin_window)
+        layout.addWidget(plugin_ui)
+        
+        close_btn = QPushButton("Cerrar")
+        close_btn.clicked.connect(self.plugin_window.close)
+        layout.addWidget(close_btn)
+        
+        self.plugin_window.show()
+
+    def _toggle_plugin_window(self):
+        """Abre o cierra la ventana del plugin según su estado."""
+        if self.plugin_window is None or not self.plugin_window.isVisible():
+            if self._plugin_ui:
+                self.open_plugin_window(self._plugin_ui)
+        else:
+            self.plugin_window.close()
+
+    def _on_plugin_window_closed(self, result):
+        """Limpia la referencia cuando se cierra la ventana del plugin."""
+        self.plugin_window = None

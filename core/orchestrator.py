@@ -114,6 +114,7 @@ class Orchestrator(QObject):
             
             # Conectar señales de la UI al DSP usando functools.partial para evitar problemas de closure
             ui.parameter_changed.connect(partial(self._on_plugin_param_changed, dsp))
+            ui.print_coeffs_requested.connect(dsp.print_coeffs)
             
             # Actualizar el Worker de procesamiento si está activo
             if "processing" in self.workers:

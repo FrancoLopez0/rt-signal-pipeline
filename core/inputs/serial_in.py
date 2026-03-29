@@ -79,7 +79,7 @@ class SerialInput(QObject):
                     try:
                         # Parsear valor del CSV
                         value = float(line)
-                        print(f"[Serial] Dato: {value}")
+                        # print(f"[Serial] Dato: {value}")
                         
                         # Agregar al buffer (descarte automático de antiguos cuando lleno)
                         self.data_buffer.append(value)
