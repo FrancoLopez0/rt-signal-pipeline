@@ -23,8 +23,6 @@ class MainWindow(QMainWindow):
         self.input_buffer = np.zeros((self.buffer_size, 1))
         self.output_buffer = np.zeros((self.buffer_size, 1))
         
-        self.trigger_enabled = True
-        self.trigger_level = 0.0
         self.show_fft = True
         self.scatter_mode = False
         
@@ -94,7 +92,7 @@ class MainWindow(QMainWindow):
         tab_separado_layout.setContentsMargins(4, 4, 4, 4)
         
         # Plot de entrada
-        self.input_plot = pg.PlotWidget(title="<span style='color: #f0e68c;'>⬤</span> Entrada (Tiempo) - Trigger: Zero Crossing")
+        self.input_plot = pg.PlotWidget(title="<span style='color: #f0e68c;'>⬤</span> Entrada (Tiempo)")
         self.input_plot.setStyleSheet("background-color: #161b22; border-radius: 6px;")
         self.input_plot.setLimits(xMin=0, xMax=self.plot_x_max*2, yMin=-10000, yMax=10000)  # Limitar rangos
         self.input_plot.setXRange(0, self.plot_x_max, padding=0)
@@ -239,7 +237,7 @@ class MainWindow(QMainWindow):
         
         serial_layout.addWidget(QLabel("Modo Serial:"))
         self.combo_serial_mode = QComboBox()
-        self.combo_serial_mode.addItems(["CSV", "RAW Binary"])
+        self.combo_serial_mode.addItems(["CSV", "RAW Binary", "XY Colon"])
         self.combo_serial_mode.currentTextChanged.connect(self.on_serial_mode_changed)
         serial_layout.addWidget(self.combo_serial_mode)
 
@@ -273,13 +271,7 @@ class MainWindow(QMainWindow):
         sidebar_layout.addSpacing(10)
         sidebar_layout.addWidget(QLabel("<b>Visualización / Audio</b>"))
         
-        # Trigger Toggle
-        self.btn_trigger = QPushButton("Trigger: ON")
-        self.btn_trigger.setCheckable(True)
-        self.btn_trigger.setChecked(True)
-        self.btn_trigger.clicked.connect(self.toggle_trigger)
-        sidebar_layout.addWidget(self.btn_trigger)
-        
+
         # FFT Toggle
         self.check_fft = QCheckBox("Mostrar FFT")
         self.check_fft.setChecked(True)
@@ -386,7 +378,12 @@ class MainWindow(QMainWindow):
         self.orchestrator.generator.update_params(amplitude=amp)
 
     def on_serial_mode_changed(self, text):
-        mode = "raw" if "RAW" in text else "fft"
+        if "RAW" in text:
+            mode = "raw"
+        elif "XY" in text:
+            mode = "xy_colon"
+        else:
+            mode = "csv"
         self.orchestrator.serial_in.mode = mode
         # Forzar reinicio para aplicar modo
         if self.orchestrator.current_source == 'serial':
@@ -721,10 +718,6 @@ class MainWindow(QMainWindow):
             }
         """)
 
-    def toggle_trigger(self):
-        self.trigger_enabled = self.btn_trigger.isChecked()
-        self.btn_trigger.setText(f"Trigger: {'ON' if self.trigger_enabled else 'OFF'}")
-
     def toggle_fft_visibility(self, checked):
         """Muestra u oculta el gráfico de FFT."""
         self.show_fft = checked
@@ -766,21 +759,6 @@ class MainWindow(QMainWindow):
             curve = curve_list.pop()
             plot_widget.removeItem(curve)
 
-    def _apply_trigger(self, data_buffer):
-        if not self.trigger_enabled or data_buffer.shape[0] < self.display_size:
-            return data_buffer[-self.display_size:]
-            
-        search_range = self.buffer_size - self.display_size
-        ch0 = data_buffer[:, 0] if data_buffer.ndim > 1 else data_buffer
-        indices = np.where((ch0[:search_range-1] < self.trigger_level) & 
-                           (ch0[1:search_range] >= self.trigger_level))[0]
-        
-        if len(indices) > 0:
-            start_idx = indices[0]
-            return data_buffer[start_idx : start_idx + self.display_size]
-        
-        return data_buffer[-self.display_size:]
-
     def _update_buffer(self, buffer, data):
         if data.ndim == 1:
             data = data.reshape(-1, 1)
@@ -801,6 +779,37 @@ class MainWindow(QMainWindow):
             display_data = display_data.reshape(-1, 1)
             
         num_channels = display_data.shape[1]
+        is_xy_mode = (self.orchestrator.current_source == 'serial' and self.orchestrator.serial_in.mode == 'xy_colon')
+
+        if is_xy_mode:
+            self._ensure_curves(1, plot_widget, curves_list, base_pen)
+            self._ensure_curves(1, combined_plot_widget, combined_curves_list, base_pen, name_prefix)
+            
+            # Ocultar curvas adicionales
+            for i in range(1, len(curves_list)):
+                curves_list[i].setData([], [])
+                combined_curves_list[i].setData([], [])
+                
+            i = 0
+            if self.scatter_mode:
+                curves_list[i].setPen(None)
+                curves_list[i].setSymbol('o')
+                curves_list[i].setSymbolSize(3)
+                combined_curves_list[i].setPen(None)
+                combined_curves_list[i].setSymbol('o')
+                combined_curves_list[i].setSymbolSize(3)
+            else:
+                curves_list[i].setPen(base_pen)
+                curves_list[i].setSymbol(None)
+                combined_curves_list[i].setPen(base_pen)
+                combined_curves_list[i].setSymbol(None)
+                
+            if num_channels >= 2:
+                sort_idx = np.argsort(display_data[:, 0])
+                curves_list[i].setData(x=display_data[sort_idx, 0], y=display_data[sort_idx, 1])
+                combined_curves_list[i].setData(x=display_data[sort_idx, 0], y=display_data[sort_idx, 1])
+            return
+
         self._ensure_curves(num_channels, plot_widget, curves_list, base_pen)
         self._ensure_curves(num_channels, combined_plot_widget, combined_curves_list, base_pen, name_prefix)
         
@@ -827,13 +836,13 @@ class MainWindow(QMainWindow):
     @pyqtSlot(object)
     def update_input_plot(self, data):
         self.input_buffer = self._update_buffer(self.input_buffer, data)
-        display_data = self._apply_trigger(self.input_buffer)
+        display_data = self.input_buffer[-self.display_size:]
         self._plot_multi_channel(display_data, self.input_curves, self.combined_input_curves, self.input_plot, self.combined_plot, self.pen_input, '<span style="color: #f0e68c;">●</span> Entrada')
 
     @pyqtSlot(object)
     def update_output_plot(self, data):
         self.output_buffer = self._update_buffer(self.output_buffer, data)
-        display_data = self._apply_trigger(self.output_buffer)
+        display_data = self.output_buffer[-self.display_size:]
         self._plot_multi_channel(display_data, self.output_curves, self.combined_output_curves, self.output_plot, self.combined_plot, self.pen_output, '<span style="color: #00d9ff;">●</span> Salida')
         
         self.update_fft(display_data)

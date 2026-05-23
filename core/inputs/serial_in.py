@@ -6,7 +6,7 @@ import queue
 import time
 from collections import deque
 from PyQt6.QtCore import QObject, pyqtSignal
-from core.inputs.serial_strategies import CsvStrategy, RawStrategy
+from core.inputs.serial_strategies import CsvStrategy, RawStrategy, XYColonStrategy
 
 class SerialInput(QObject):
     """Adquisición de datos desde puerto serial (Arduino, ESP32, etc.)."""
@@ -52,6 +52,8 @@ class SerialInput(QObject):
 
         if self.mode == 'csv':
             self.strategy = CsvStrategy()
+        elif self.mode == 'xy_colon':
+            self.strategy = XYColonStrategy()
         else:
             self.strategy = RawStrategy(data_type=self.data_type, hex_separator=self.hex_separator)
 
