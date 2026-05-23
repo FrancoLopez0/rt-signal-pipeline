@@ -18,7 +18,7 @@ class LowPassFIRUI(BaseProcessUI):
         layout.addWidget(self.cutoff_label)
 
         self.cutoff_slider = QSlider(Qt.Orientation.Horizontal)
-        self.cutoff_slider.setRange(20, 20000)
+        self.cutoff_slider.setRange(1, 20000)
         self.cutoff_slider.setValue(1000)
         self.cutoff_slider.valueChanged.connect(self.on_cutoff_changed)
         layout.addWidget(self.cutoff_slider)
@@ -27,7 +27,7 @@ class LowPassFIRUI(BaseProcessUI):
         layout.addWidget(self.order_label)
 
         self.order_slider = QSlider(Qt.Orientation.Horizontal)
-        self.order_slider.setRange(8, 256)
+        self.order_slider.setRange(1, 256)
         self.order_slider.setValue(64)
         self.order_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
         self.order_slider.setTickInterval(16)
