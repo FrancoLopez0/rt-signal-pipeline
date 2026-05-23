@@ -75,9 +75,9 @@ class Orchestrator(QObject):
         if source_func and "processing" in self.workers:
             self._start_acquisition_worker(source_func)
 
-    def update_serial_params(self, port=None, baudrate=None, mode=None, data_type=None, hex_separator=None):
+    def update_serial_params(self, port=None, baudrate=None, mode=None, data_type=None, hex_separator=None, num_channels=None):
         """Actualiza la configuración serial."""
-        self.serial_in.update_config(port, baudrate, mode, data_type, hex_separator)
+        self.serial_in.update_config(port, baudrate, mode, data_type, hex_separator, num_channels)
         # Si ya estábamos en serial, reiniciamos para aplicar cambios
         if self.current_source == 'serial' and "acquisition" in self.workers:
             self.set_input_source('serial')
