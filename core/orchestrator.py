@@ -32,11 +32,9 @@ class Orchestrator(QObject):
         self.generator = SignalGenerator(self.sample_rate)
         self.audio_in = AudioInput(self.sample_rate, self.chunk_size)
         self.serial_in = SerialInput(input_queue=self.input_queue)
+        self.serial_in.data_updated.connect(self.data_acquired)
         
         self.current_source = 'generator'
-        
-        # Flag para rastrear si serial está conectado al pipeline
-        self._serial_connected = False
         
         # Referencias a workers y threads
         self.workers = {}
@@ -71,19 +69,15 @@ class Orchestrator(QObject):
         elif source_type == 'serial':
             # Serial ahora pasa por el pipeline de plugins
             # El hilo serial ya pone datos en input_queue
-            # Conectar señal para el plot de entrada
-            if not self._serial_connected:
-                self.serial_in.data_updated.connect(self.data_acquired)
-                self._serial_connected = True
             return  # No iniciar AcquisitionWorker - serial tiene su propio hilo
 
         # 3. Arrancar el worker si el pipeline está activo
         if source_func and "processing" in self.workers:
             self._start_acquisition_worker(source_func)
 
-    def update_serial_params(self, port=None, baudrate=None):
+    def update_serial_params(self, port=None, baudrate=None, mode=None, data_type=None, hex_separator=None):
         """Actualiza la configuración serial."""
-        self.serial_in.update_config(port, baudrate)
+        self.serial_in.update_config(port, baudrate, mode, data_type, hex_separator)
         # Si ya estábamos en serial, reiniciamos para aplicar cambios
         if self.current_source == 'serial' and "acquisition" in self.workers:
             self.set_input_source('serial')
