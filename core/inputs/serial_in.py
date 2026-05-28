@@ -6,25 +6,32 @@ import queue
 import time
 from collections import deque
 from PyQt6.QtCore import QObject, pyqtSignal
+from core.inputs.serial_strategies import CsvStrategy, RawStrategy
 
 class SerialInput(QObject):
     """Adquisición de datos desde puerto serial (Arduino, ESP32, etc.)."""
     data_updated = pyqtSignal(np.ndarray)  # Señal emitida cuando llega un dato
     
-    def __init__(self, port=None, baudrate=115200, mode='raw', input_queue=None, chunk_size=1024, emit_interval=0.05):
+    def __init__(self, port=None, baudrate=115200, input_queue=None, chunk_size=1024, emit_interval=0.05):
         super().__init__()
         self.port = port
         self.baudrate = baudrate
-        self.mode = mode  # 'raw' para audio, 'fft' para x,y
         self.ser = None
         self.running = False
         self.chunk_size = chunk_size  # Tamaño fijo de chunk para consistencia
         self.emit_interval = emit_interval  # Intervalo mínimo entre emisiones (segundos)
         self.data_buffer = deque(maxlen=chunk_size)  # Ventana deslizante de chunk_size
-        self.chunk_array = np.zeros(chunk_size, dtype=np.float32)  # Pre-allocado para eficiencia
+        self.chunk_array = None # Pre-allocado dinámicamente según canales
         self.thread = None
         self.input_queue = input_queue  # queue.Queue for plugin pipeline
         self._last_emit_time = 0  # Para throttling
+        
+        # Estrategia por defecto
+        self.strategy = CsvStrategy()
+        self.mode = 'csv' # 'csv' o 'raw'
+        self.data_type = 'int16'
+        self.hex_separator = ''
+        self.num_channels = 1
 
     def set_queue(self, queue):
         """Set the input queue for plugin pipeline integration."""
@@ -36,10 +43,19 @@ class SerialInput(QObject):
         ports = serial.tools.list_ports.comports()
         return [p.device for p in ports]
 
-    def update_config(self, port=None, baudrate=None):
-        """Actualiza los parámetros de conexión."""
+    def update_config(self, port=None, baudrate=None, mode=None, data_type=None, hex_separator=None, num_channels=None):
+        """Actualiza los parámetros de conexión y la estrategia."""
         if port is not None: self.port = port
         if baudrate is not None: self.baudrate = int(baudrate)
+        if mode is not None: self.mode = mode
+        if data_type is not None: self.data_type = data_type
+        if hex_separator is not None: self.hex_separator = hex_separator
+        if num_channels is not None: self.num_channels = int(num_channels)
+
+        if self.mode == 'csv':
+            self.strategy = CsvStrategy()
+        else:
+            self.strategy = RawStrategy(data_type=self.data_type, hex_separator=self.hex_separator, num_channels=self.num_channels)
 
     def start(self):
         """Inicia el hilo de lectura serial."""
@@ -50,6 +66,8 @@ class SerialInput(QObject):
         try:
             self.ser = serial.Serial(self.port, self.baudrate, timeout=0.1)
             self.running = True
+            self.data_buffer.clear()
+            self.chunk_array = None
             self.thread = threading.Thread(target=self._read_loop, daemon=True)
             self.thread.start()
             print(f"Puerto Serial {self.port} abierto a {self.baudrate} bps.")
@@ -69,20 +87,21 @@ class SerialInput(QObject):
 
     def _read_loop(self):
         """Bucle de lectura que alimenta el buffer y emite señales."""
+        leftover = b''
         while self.running:
             try:
                 if self.ser and self.ser.in_waiting > 0:
-                    line = self.ser.readline().decode('utf-8', errors='ignore').strip()
-                    if not line:
+                    raw_data = self.ser.read(self.ser.in_waiting)
+                    if not raw_data:
                         continue
                     
-                    try:
-                        # Parsear valor del CSV
-                        value = float(line)
-                        # print(f"[Serial] Dato: {value}")
-                        
-                        # Agregar al buffer (descarte automático de antiguos cuando lleno)
-                        self.data_buffer.append(value)
+                    data_to_parse = leftover + raw_data
+                    parsed_data, leftover = self.strategy.parse(data_to_parse)
+                    
+                    if parsed_data.size > 0:
+                        # parsed_data is (num_samples, num_channels)
+                        for row in parsed_data:
+                            self.data_buffer.append(row)
                         
                         # Throttling: solo emitir cada emit_interval segundos
                         current_time = time.perf_counter()
@@ -102,8 +121,6 @@ class SerialInput(QObject):
                                 except queue.Full:
                                     pass
 
-                    except ValueError:
-                        continue
             except Exception as e:
                 print(f"Error en lectura serial: {e}")
                 break
@@ -113,23 +130,32 @@ class SerialInput(QObject):
         buffer_len = len(self.data_buffer)
         
         if buffer_len == 0:
-            return self.chunk_array  # Retornar array de ceros pre-allocado
+            if self.chunk_array is not None:
+                return self.chunk_array
+            return np.zeros((self.chunk_size, 1), dtype=np.float32)
+            
+        num_channels = max(len(row) for row in self.data_buffer)
         
-        # Limpiar array y copiar datos directamente
+        if self.chunk_array is None or self.chunk_array.shape[1] != num_channels:
+            self.chunk_array = np.zeros((self.chunk_size, num_channels), dtype=np.float32)
+            
+        # Limpiar array
         self.chunk_array.fill(0)
         
-        if buffer_len >= self.chunk_size:
-            # Buffer tiene suficientes datos - copiar últimos chunk_size elementos
-            # Usar iterador para eficiencia
-            start_idx = buffer_len - self.chunk_size
-            for i, val in enumerate(list(self.data_buffer)[start_idx:]):
-                self.chunk_array[i] = val
-        else:
-            # Buffer tiene menos datos, centrar en el chunk
-            start_idx = self.chunk_size - buffer_len
-            for i, val in enumerate(self.data_buffer):
-                self.chunk_array[start_idx + i] = val
+        padded_list = []
+        for row in self.data_buffer:
+            if len(row) < num_channels:
+                padded_list.append(np.pad(row, (0, num_channels - len(row)), constant_values=np.nan))
+            else:
+                padded_list.append(row[:num_channels])
         
+        if buffer_len >= self.chunk_size:
+            start_idx = buffer_len - self.chunk_size
+            self.chunk_array[:] = padded_list[start_idx:]
+        else:
+            start_idx = self.chunk_size - buffer_len
+            self.chunk_array[start_idx:] = padded_list
+            
         return self.chunk_array
 
     def get_data(self) -> np.ndarray:

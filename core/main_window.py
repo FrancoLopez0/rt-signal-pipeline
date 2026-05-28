@@ -4,11 +4,12 @@ import pyqtgraph as pg
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                              QPushButton, QFileDialog, QLabel, QFrame, QSplitter, 
                              QMessageBox, QComboBox, QCheckBox, QSlider, QTabWidget,
-                             QSpinBox, QDoubleSpinBox, QDialog)
-from PyQt6.QtCore import Qt, pyqtSlot
+                             QSpinBox, QDoubleSpinBox, QDialog, QLineEdit)
+from PyQt6.QtCore import Qt, pyqtSlot, pyqtSignal
 from core.orchestrator import Orchestrator
 
 class MainWindow(QMainWindow):
+    channels_detected = pyqtSignal(int)
     def __init__(self):
         super().__init__()
         self.setWindowTitle("RT Signal Pipeline - PyQt DSP")
@@ -20,8 +21,8 @@ class MainWindow(QMainWindow):
         # Buffers para visualización
         self.buffer_size = 8192 
         self.display_size = 1024 
-        self.input_buffer = np.zeros(self.buffer_size)
-        self.output_buffer = np.zeros(self.buffer_size)
+        self.input_buffer = np.zeros((self.buffer_size, 1))
+        self.output_buffer = np.zeros((self.buffer_size, 1))
         
         self.trigger_enabled = True
         self.trigger_level = 0.0
@@ -46,6 +47,13 @@ class MainWindow(QMainWindow):
         self.plugin_window = None
         self._plugin_ui = None
         self.current_plugin_name = "Ninguno"
+        
+        # Serial and channel configuration state
+        self.channel_configs = {}
+        self.serial_num_channels = 1
+        self.serial_data_type = "int16"
+        self.serial_hex_sep = ""
+        self.current_detected_channels = 0
         
         self._init_ui()
         self._apply_styles()
@@ -104,9 +112,8 @@ class MainWindow(QMainWindow):
         self.input_plot.getAxis('left').setPen('#484f58')
         self.input_plot.getAxis('bottom').setTextPen('#8b949e')
         self.input_plot.getAxis('left').setTextPen('#8b949e')
-        # Crear curva line y scatter para entrada
-        self.input_curve = self.input_plot.plot(pen=self.pen_input, clipToView=False)
-        self.input_scatter = pg.ScatterPlotItem(pen=None, brush='#f0e68c', size=3, symbol='o')
+        # Crear curva para entrada
+        self.input_curves = []
         tab_separado_layout.addWidget(self.input_plot)
         
         # Plot de salida
@@ -120,15 +127,14 @@ class MainWindow(QMainWindow):
         self.output_plot.getAxis('left').setPen('#484f58')
         self.output_plot.getAxis('bottom').setTextPen('#8b949e')
         self.output_plot.getAxis('left').setTextPen('#8b949e')
-        # Crear curva line y scatter para salida
-        self.output_curve = self.output_plot.plot(pen=self.pen_output, clipToView=False)
-        self.output_scatter = pg.ScatterPlotItem(pen=None, brush='#00d9ff', size=3, symbol='o')
+        # Crear curva para salida
+        self.output_curves = []
         tab_separado_layout.addWidget(self.output_plot)
         
         # FFT plot
         self.fft_plot = pg.PlotWidget(title="<span style='color: #00ff88;'>⬤</span> Espectro de Frecuencia (FFT)")
         self.fft_plot.setStyleSheet("background-color: #161b22; border-radius: 6px;")
-        self.fft_curve = self.fft_plot.plot(pen=self.pen_fft, clipToView=False)
+        self.fft_curves = []
         self.fft_plot.setLogMode(x=True, y=False)
         self.fft_plot.showGrid(x=True, y=True, alpha=0.3)
         self.fft_plot.getAxis('bottom').setPen('#484f58')
@@ -157,11 +163,9 @@ class MainWindow(QMainWindow):
         self.combined_plot.getAxis('left').setPen('#484f58')
         self.combined_plot.getAxis('bottom').setTextPen('#8b949e')
         self.combined_plot.getAxis('left').setTextPen('#8b949e')
-        # dos curvas line y scatter para combinado
-        self.combined_input_curve = self.combined_plot.plot(pen=self.pen_input, clipToView=False, name='<span style="color: #f0e68c;">●</span> Entrada')
-        self.combined_input_scatter = pg.ScatterPlotItem(pen=None, brush='#f0e68c', size=3, symbol='o')
-        self.combined_output_curve = self.combined_plot.plot(pen=self.pen_output, clipToView=False, name='<span style="color: #00d9ff;">●</span> Salida')
-        self.combined_output_scatter = pg.ScatterPlotItem(pen=None, brush='#00d9ff', size=3, symbol='o')
+        # curvas line para combinado
+        self.combined_input_curves = []
+        self.combined_output_curves = []
         # Agregar leyenda
         self.combined_plot.addLegend(offset=(10, 10))
         tab_combinado_layout.addWidget(self.combined_plot)
@@ -243,9 +247,17 @@ class MainWindow(QMainWindow):
         
         serial_layout.addWidget(QLabel("Modo Serial:"))
         self.combo_serial_mode = QComboBox()
-        self.combo_serial_mode.addItems(["Audio RAW", "FFT x,y"])
+        self.combo_serial_mode.addItems(["CSV", "RAW Binary"])
         self.combo_serial_mode.currentTextChanged.connect(self.on_serial_mode_changed)
         serial_layout.addWidget(self.combo_serial_mode)
+
+        self.btn_raw_format = QPushButton("Formato RAW (Tipo/Hex)")
+        self.btn_raw_format.clicked.connect(self.open_raw_format_dialog)
+        serial_layout.addWidget(self.btn_raw_format)
+        
+        self.btn_channel_config = QPushButton("Configurar Canales (Color/Vis)")
+        self.btn_channel_config.clicked.connect(self.open_channel_config_window)
+        serial_layout.addWidget(self.btn_channel_config)
         
         self.btn_connect = QPushButton("Conectar")
         self.btn_connect.setCheckable(True)
@@ -330,12 +342,13 @@ class MainWindow(QMainWindow):
         sidebar_layout.addWidget(self.btn_open_plugin_panel)
         
         sidebar_layout.addStretch()
-        
+
         # Agregar al splitter
         self.splitter.addWidget(graph_container)
         self.splitter.addWidget(self.sidebar)
         self.splitter.setStretchFactor(0, 3)
         self.splitter.setStretchFactor(1, 1)
+        self.open_channel_config_window()
 
     def on_source_changed(self, index):
         sources = ['generator', 'audio', 'serial']
@@ -347,10 +360,6 @@ class MainWindow(QMainWindow):
         
         # Si había una conexión serial activa, desconectar
         if self.orchestrator.serial_in.ser:
-            try:
-                self.orchestrator.serial_in.data_updated.disconnect(self.update_serial_plot)
-            except TypeError:
-                pass  # Señal no estaba conectada
             self.orchestrator.serial_in.stop()
             self.btn_connect.setText("Conectar")
             self.btn_connect.setChecked(False)
@@ -379,7 +388,7 @@ class MainWindow(QMainWindow):
         self.orchestrator.generator.update_params(amplitude=amp)
 
     def on_serial_mode_changed(self, text):
-        mode = "raw" if "RAW" in text else "fft"
+        mode = "raw" if "RAW" in text else "csv"
         self.orchestrator.serial_in.mode = mode
         # Forzar reinicio para aplicar modo
         if self.orchestrator.current_source == 'serial':
@@ -408,8 +417,6 @@ class MainWindow(QMainWindow):
             self.orchestrator.serial_in.update_config(port=port, baudrate=baudrate)
             
             if self.orchestrator.serial_in.start():
-                # Conectar señal para actualizar gráfico en tiempo real
-                self.orchestrator.serial_in.data_updated.connect(self.update_serial_plot)
                 self.btn_connect.setText("Desconectar")
                 self.statusBar().showMessage(f"Serial conectado: {port}")
             else:
@@ -417,11 +424,49 @@ class MainWindow(QMainWindow):
                 self.statusBar().showMessage("Error: No se pudo conectar al puerto serial")
         else:
             # Desconectar
-            self.orchestrator.serial_in.data_updated.disconnect(self.update_serial_plot)
             self.orchestrator.serial_in.stop()
             self.btn_connect.setText("Conectar")
             self.btn_connect.setChecked(False)
             self.statusBar().showMessage("Serial desconectado")
+
+    def open_raw_format_dialog(self):
+        from core.raw_format_dialog import RawFormatDialog
+        dialog = RawFormatDialog(
+            current_data_type=self.serial_data_type,
+            current_hex_sep=self.serial_hex_sep,
+            current_num_channels=self.serial_num_channels,
+            parent=self
+        )
+        dialog.config_applied.connect(self.on_raw_format_applied)
+        dialog.exec()
+
+    def open_channel_config_window(self):
+        if not hasattr(self, 'channel_config_window') or self.channel_config_window is None:
+            from core.channel_config_window import ChannelConfigWindow
+            self.channel_config_window = ChannelConfigWindow(
+                current_num_channels=self.current_detected_channels,
+                current_configs=self.channel_configs,
+                parent=self
+            )
+            self.channels_detected.connect(self.channel_config_window.update_channel_rows)
+            self.channel_config_window.config_changed.connect(self.on_channel_config_changed)
+            
+        self.channel_config_window.show()
+        self.channel_config_window.raise_()
+        
+    def on_raw_format_applied(self, data_type, hex_sep, num_channels):
+        self.serial_data_type = data_type
+        self.serial_hex_sep = hex_sep
+        self.serial_num_channels = num_channels
+        
+        self.orchestrator.update_serial_params(
+            data_type=self.serial_data_type, 
+            hex_separator=self.serial_hex_sep,
+            num_channels=self.serial_num_channels
+        )
+
+    def on_channel_config_changed(self, configs):
+        self.channel_configs = configs
 
     def _connect_signals(self):
         self.orchestrator.data_acquired.connect(self.update_input_plot)
@@ -729,31 +774,6 @@ class MainWindow(QMainWindow):
     def toggle_scatter_mode(self, checked):
         """Alterna entre modo línea y modo scatter."""
         self.scatter_mode = checked
-        
-        # Mostrar/ocultar elementos según el modo
-        # Input plot
-        if checked:
-            self.input_plot.addItem(self.input_scatter)
-            self.input_curve.setData([])
-        else:
-            self.input_plot.removeItem(self.input_scatter)
-        
-        # Output plot
-        if checked:
-            self.output_plot.addItem(self.output_scatter)
-            self.output_curve.setData([])
-        else:
-            self.output_plot.removeItem(self.output_scatter)
-        
-        # Combined plot
-        if checked:
-            self.combined_plot.addItem(self.combined_input_scatter)
-            self.combined_plot.addItem(self.combined_output_scatter)
-            self.combined_input_curve.setData([])
-            self.combined_output_curve.setData([])
-        else:
-            self.combined_plot.removeItem(self.combined_input_scatter)
-            self.combined_plot.removeItem(self.combined_output_scatter)
     
     def on_y_range_changed(self, value):
         """Actualiza el rango Y de los gráficos de tiempo."""
@@ -775,16 +795,26 @@ class MainWindow(QMainWindow):
         self.output_plot.setXRange(0, value)
         self.combined_plot.setXRange(0, value)
 
+    def _ensure_curves(self, num_channels, plot_widget, curve_list, base_pen, name_prefix=None):
+        while len(curve_list) < num_channels:
+            color = base_pen.color()
+            color = color.lighter(100 + len(curve_list) * 20)
+            pen = pg.mkPen(color=color, width=base_pen.width())
+            name = f"{name_prefix} {len(curve_list)+1}" if name_prefix else None
+            curve = plot_widget.plot(pen=pen, clipToView=False, name=name)
+            curve_list.append(curve)
+        while len(curve_list) > num_channels:
+            curve = curve_list.pop()
+            plot_widget.removeItem(curve)
+
     def _apply_trigger(self, data_buffer):
-        """Busca el primer cruce por cero ascendente para estabilizar la señal."""
-        if not self.trigger_enabled:
+        if not self.trigger_enabled or data_buffer.shape[0] < self.display_size:
             return data_buffer[-self.display_size:]
             
-        # Buscar cruce por cero (de negativo a positivo)
-        # Buscamos en la primera mitad del buffer para tener margen de visualización
         search_range = self.buffer_size - self.display_size
-        indices = np.where((data_buffer[:search_range-1] < self.trigger_level) & 
-                           (data_buffer[1:search_range] >= self.trigger_level))[0]
+        ch0 = data_buffer[:, 0] if data_buffer.ndim > 1 else data_buffer
+        indices = np.where((ch0[:search_range-1] < self.trigger_level) & 
+                           (ch0[1:search_range] >= self.trigger_level))[0]
         
         if len(indices) > 0:
             start_idx = indices[0]
@@ -792,92 +822,107 @@ class MainWindow(QMainWindow):
         
         return data_buffer[-self.display_size:]
 
+    def _update_buffer(self, buffer, data):
+        if data.ndim == 1:
+            data = data.reshape(-1, 1)
+        channels = data.shape[1]
+        
+        if buffer.shape[1] != channels:
+            buffer = np.zeros((self.buffer_size, channels))
+            
+        if len(data) >= self.buffer_size:
+            buffer[:] = data[-self.buffer_size:]
+        else:
+            buffer[:-len(data)] = buffer[len(data):].copy()
+            buffer[-len(data):] = data
+        return buffer
+
+    def _plot_multi_channel(self, display_data, curves_list, combined_curves_list, plot_widget, combined_plot_widget, base_pen, name_prefix):
+        if display_data.ndim == 1:
+            display_data = display_data.reshape(-1, 1)
+            
+        num_channels = display_data.shape[1]
+        self._ensure_curves(num_channels, plot_widget, curves_list, base_pen)
+        self._ensure_curves(num_channels, combined_plot_widget, combined_curves_list, base_pen, name_prefix)
+        
+        for i in range(num_channels):
+            # Check visibility from configs, default to True if missing
+            visible = True
+            if i in self.channel_configs:
+                visible = self.channel_configs[i].get('visible', True)
+                
+            curves_list[i].setVisible(visible)
+            combined_curves_list[i].setVisible(visible)
+            
+            if not visible:
+                continue
+                
+            if self.scatter_mode:
+                curves_list[i].setPen(None)
+                curves_list[i].setSymbol('o')
+                curves_list[i].setSymbolSize(3)
+                combined_curves_list[i].setPen(None)
+                combined_curves_list[i].setSymbol('o')
+                combined_curves_list[i].setSymbolSize(3)
+            else:
+                if i in self.channel_configs and 'color' in self.channel_configs[i]:
+                    color = self.channel_configs[i]['color']
+                else:
+                    color = base_pen.color().lighter(100 + i * 20)
+                    
+                pen = pg.mkPen(color=color, width=base_pen.width())
+                curves_list[i].setPen(pen)
+                curves_list[i].setSymbol(None)
+                combined_curves_list[i].setPen(pen)
+                combined_curves_list[i].setSymbol(None)
+                
+            curves_list[i].setData(display_data[:, i])
+            combined_curves_list[i].setData(display_data[:, i])
+
     @pyqtSlot(object)
     def update_input_plot(self, data):
-        """Callback de datos de entrada - actualiza gráficos directamente."""
-        # Actualizar buffer - sin np.roll, el deque ya maneja la ventana
-        self.input_buffer[-len(data):] = data
-        
-        # Calcular datos para display
+        if data.ndim == 1:
+            data = data.reshape(-1, 1)
+        num_channels = data.shape[1]
+        if num_channels > self.current_detected_channels:
+            self.current_detected_channels = num_channels
+            self.channels_detected.emit(num_channels)
+            
+        self.input_buffer = self._update_buffer(self.input_buffer, data)
         display_data = self._apply_trigger(self.input_buffer)
-        
-        # Actualizar según modo scatter o line
-        if self.scatter_mode:
-            x_data = np.arange(len(display_data))
-            self.input_scatter.setData(x_data, display_data)
-            self.combined_input_scatter.setData(x_data, display_data)
-        else:
-            self.input_curve.setData(display_data)
-            self.combined_input_curve.setData(display_data)
-
-    @pyqtSlot(np.ndarray)
-    def update_serial_plot(self, data):
-        """Actualiza el gráfico de entrada con datos del serial."""
-        # Actualizar buffer sin np.roll
-        self.input_buffer[-len(data):] = data
-        
-        # Actualizar según modo
-        if self.scatter_mode:
-            x_data = np.arange(len(data))
-            self.input_scatter.setData(x_data, data)
-            self.combined_input_scatter.setData(x_data, data)
-        else:
-            self.input_curve.setData(data)
-            self.combined_input_curve.setData(data)
+        self._plot_multi_channel(display_data, self.input_curves, self.combined_input_curves, self.input_plot, self.combined_plot, self.pen_input, '<span style="color: #f0e68c;">●</span> Entrada')
 
     @pyqtSlot(object)
     def update_output_plot(self, data):
-        """Callback de datos procesados - actualiza gráficos directamente."""
-        # Actualizar buffer sin np.roll
-        self.output_buffer[-len(data):] = data
-        
-        # Calcular datos para display
+        self.output_buffer = self._update_buffer(self.output_buffer, data)
         display_data = self._apply_trigger(self.output_buffer)
+        self._plot_multi_channel(display_data, self.output_curves, self.combined_output_curves, self.output_plot, self.combined_plot, self.pen_output, '<span style="color: #00d9ff;">●</span> Salida')
         
-        # Actualizar según modo
-        if self.scatter_mode:
-            x_data = np.arange(len(display_data))
-            self.output_scatter.setData(x_data, display_data)
-            self.combined_output_scatter.setData(x_data, display_data)
-        else:
-            self.output_curve.setData(display_data)
-            self.combined_output_curve.setData(display_data)
-        
-        # FFT solo si no es serial FFT mode
-        if self.orchestrator.current_source != 'serial' or self.orchestrator.serial_in.mode == 'raw':
-            self.update_fft(display_data)
-        else:
-            # Serial FFT mode - los datos ya contienen x,y
-            self._update_fft_from_serial(data)
+        self.update_fft(display_data)
 
     def update_fft(self, data):
         """Calcula y grafica la FFT de los datos locales con enventanado y suavizado."""
         try:
+            if data.ndim > 1:
+                data = data[:, 0]
             n = len(data)
             if n < 2: return
             
-            # 1. Aplicar ventana de Hanning para reducir fugas espectrales
             window = np.hanning(n)
             windowed_data = data * window
             
-            # 2. Calcular FFT real
             freqs = np.fft.rfftfreq(n, d=1/self.orchestrator.sample_rate)
             mag = np.abs(np.fft.rfft(windowed_data))
             
-            # 3. Convertir a dB con protección contra ceros
             mag_db = 20 * np.log10(mag + 1e-6)
             
-            # 4. Suavizado Temporal (Filtro de Persistencia)
             if self.fft_smoothed is None or len(self.fft_smoothed) != len(mag_db):
                 self.fft_smoothed = mag_db
             else:
-                # mag_db_new = alpha * actual + (1-alpha) * previa
                 self.fft_smoothed = self.fft_alpha * mag_db + (1 - self.fft_alpha) * self.fft_smoothed
             
-            # 5. Dibujar (frecuencias a partir de la 1 para ignorar DC)
-            self.fft_curve.setData(freqs[1:], self.fft_smoothed[1:])
-            # Ya no necesitamos setYRange aquí porque está configurado en __init__
-            
+            self._ensure_curves(1, self.fft_plot, self.fft_curves, self.pen_fft)
+            self.fft_curves[0].setData(freqs[1:], self.fft_smoothed[1:])
         except Exception as e:
             print(f"Error en FFT: {e}")
 
