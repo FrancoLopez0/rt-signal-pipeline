@@ -839,6 +839,7 @@ class MainWindow(QMainWindow):
                 
             i = 0
             current_symbol = curves_list[i].opts.get('symbol', None)
+            color = base_pen.color()
             if self.scatter_mode:
                 if current_symbol != 'o':
                     curves_list[i].setPen(pg.mkPen(None))
@@ -847,11 +848,16 @@ class MainWindow(QMainWindow):
                     combined_curves_list[i].setPen(pg.mkPen(None))
                     combined_curves_list[i].setSymbol('o')
                     combined_curves_list[i].setSymbolSize(3)
+                curves_list[i].setSymbolBrush(color)
+                curves_list[i].setSymbolPen(color)
+                combined_curves_list[i].setSymbolBrush(color)
+                combined_curves_list[i].setSymbolPen(color)
             else:
                 if current_symbol is not None:
-                    curves_list[i].setPen(base_pen)
+                    pen = pg.mkPen(color=color, width=base_pen.width())
+                    curves_list[i].setPen(pen)
                     curves_list[i].setSymbol(None)
-                    combined_curves_list[i].setPen(base_pen)
+                    combined_curves_list[i].setPen(pen)
                     combined_curves_list[i].setSymbol(None)
                 
             if num_channels >= 2:
@@ -875,6 +881,13 @@ class MainWindow(QMainWindow):
             if not visible:
                 continue
                 
+            current_symbol = curves_list[i].opts.get('symbol', None)
+            
+            if i in self.channel_configs and 'color' in self.channel_configs[i]:
+                color = self.channel_configs[i]['color']
+            else:
+                color = base_pen.color().lighter(100 + i * 20)
+                
             if self.scatter_mode:
                 if current_symbol != 'o':
                     curves_list[i].setPen(pg.mkPen(None))
@@ -883,12 +896,11 @@ class MainWindow(QMainWindow):
                     combined_curves_list[i].setPen(pg.mkPen(None))
                     combined_curves_list[i].setSymbol('o')
                     combined_curves_list[i].setSymbolSize(3)
+                curves_list[i].setSymbolBrush(color)
+                curves_list[i].setSymbolPen(color)
+                combined_curves_list[i].setSymbolBrush(color)
+                combined_curves_list[i].setSymbolPen(color)
             else:
-                if i in self.channel_configs and 'color' in self.channel_configs[i]:
-                    color = self.channel_configs[i]['color']
-                else:
-                    color = base_pen.color().lighter(100 + i * 20)
-                    
                 pen = pg.mkPen(color=color, width=base_pen.width())
                 curves_list[i].setPen(pen)
                 curves_list[i].setSymbol(None)
@@ -941,6 +953,21 @@ class MainWindow(QMainWindow):
                 self.fft_smoothed = self.fft_alpha * mag_db + (1 - self.fft_alpha) * self.fft_smoothed
             
             self._ensure_curves(1, self.fft_plot, self.fft_curves, self.pen_fft)
+            
+            current_symbol = self.fft_curves[0].opts.get('symbol', None)
+            color = self.pen_fft.color()
+            if self.scatter_mode:
+                if current_symbol != 'o':
+                    self.fft_curves[0].setPen(pg.mkPen(None))
+                    self.fft_curves[0].setSymbol('o')
+                    self.fft_curves[0].setSymbolSize(3)
+                self.fft_curves[0].setSymbolBrush(color)
+                self.fft_curves[0].setSymbolPen(color)
+            else:
+                if current_symbol is not None:
+                    self.fft_curves[0].setPen(self.pen_fft)
+                    self.fft_curves[0].setSymbol(None)
+                    
             self.fft_curves[0].setData(freqs[1:], self.fft_smoothed[1:])
         except Exception as e:
             print(f"Error en FFT: {e}")
@@ -955,7 +982,21 @@ class MainWindow(QMainWindow):
                     x.append(d[0])
                     y.append(d[1])
         if x:
-            self.fft_curve.setData(x, y)
+            self._ensure_curves(1, self.fft_plot, self.fft_curves, self.pen_fft)
+            current_symbol = self.fft_curves[0].opts.get('symbol', None)
+            color = self.pen_fft.color()
+            if self.scatter_mode:
+                if current_symbol != 'o':
+                    self.fft_curves[0].setPen(pg.mkPen(None))
+                    self.fft_curves[0].setSymbol('o')
+                    self.fft_curves[0].setSymbolSize(3)
+                self.fft_curves[0].setSymbolBrush(color)
+                self.fft_curves[0].setSymbolPen(color)
+            else:
+                if current_symbol is not None:
+                    self.fft_curves[0].setPen(self.pen_fft)
+                    self.fft_curves[0].setSymbol(None)
+            self.fft_curves[0].setData(x, y)
 
     def on_load_plugin_clicked(self):
         file_path, _ = QFileDialog.getOpenFileName(
