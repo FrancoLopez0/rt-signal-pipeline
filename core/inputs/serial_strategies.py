@@ -78,9 +78,10 @@ class XYColonStrategy(SerialParsingStrategy):
         return np.array(parsed_data, dtype=np.float32), leftover_bytes
 
 class RawStrategy(SerialParsingStrategy):
-    def __init__(self, data_type: str = 'int16', hex_separator: str = ''):
+    def __init__(self, data_type: str = 'int16', hex_separator: str = '', num_channels: int = 1):
         self.data_type = data_type
         self.hex_separator = hex_separator
+        self.num_channels = num_channels
         
         # Determine numpy dtype
         dtype_map = {
@@ -119,17 +120,16 @@ class RawStrategy(SerialParsingStrategy):
         else:
             leftover = b''
             
-        # Parse available complete items
-        num_items = len(raw_data) // self.item_size
-        if num_items == 0:
-            return np.array([]).reshape(0, 0), raw_data if not self.hex_separator else leftover
+        frame_size = self.item_size * self.num_channels
+        num_frames = len(raw_data) // frame_size
+        if num_frames == 0:
+            return np.array([]).reshape(0, self.num_channels), raw_data if not self.hex_separator else leftover
             
-        valid_length = num_items * self.item_size
+        valid_length = num_frames * frame_size
         data_to_parse = raw_data[:valid_length]
         
         if not self.hex_separator:
             leftover = raw_data[valid_length:]
             
         parsed_array = np.frombuffer(data_to_parse, dtype=self.dtype).astype(np.float32)
-        # Reshape to (num_items, 1 channel) by default for raw data without frame markers
-        return parsed_array.reshape(-1, 1), leftover
+        return parsed_array.reshape(-1, self.num_channels), leftover

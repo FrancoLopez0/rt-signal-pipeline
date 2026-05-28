@@ -5,10 +5,11 @@ from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QPushButton, QFileDialog, QLabel, QFrame, QSplitter, 
                              QMessageBox, QComboBox, QCheckBox, QSlider, QTabWidget,
                              QSpinBox, QDoubleSpinBox, QDialog, QLineEdit)
-from PyQt6.QtCore import Qt, pyqtSlot
+from PyQt6.QtCore import Qt, pyqtSlot, pyqtSignal
 from core.orchestrator import Orchestrator
 
 class MainWindow(QMainWindow):
+    channels_detected = pyqtSignal(int)
     def __init__(self):
         super().__init__()
         self.setWindowTitle("RT Signal Pipeline - PyQt DSP")
@@ -44,6 +45,13 @@ class MainWindow(QMainWindow):
         self.plugin_window = None
         self._plugin_ui = None
         self.current_plugin_name = "Ninguno"
+        
+        # Serial and channel configuration state
+        self.channel_configs = {}
+        self.serial_num_channels = 1
+        self.serial_data_type = "int16"
+        self.serial_hex_sep = ""
+        self.current_detected_channels = 0
         
         self._init_ui()
         self._apply_styles()
@@ -241,20 +249,13 @@ class MainWindow(QMainWindow):
         self.combo_serial_mode.currentTextChanged.connect(self.on_serial_mode_changed)
         serial_layout.addWidget(self.combo_serial_mode)
 
-        self.lbl_data_type = QLabel("Tipo de Dato:")
-        serial_layout.addWidget(self.lbl_data_type)
-        self.combo_data_type = QComboBox()
-        self.combo_data_type.addItems(["int8", "uint8", "int16", "uint16", "int32", "uint32", "float32", "float64"])
-        self.combo_data_type.setCurrentText("int16")
-        self.combo_data_type.currentTextChanged.connect(lambda t: self.orchestrator.update_serial_params(data_type=t))
-        serial_layout.addWidget(self.combo_data_type)
-
-        self.lbl_hex_sep = QLabel("Separador Hex (opcional):")
-        serial_layout.addWidget(self.lbl_hex_sep)
-        self.txt_hex_sep = QLineEdit()
-        self.txt_hex_sep.setPlaceholderText("Ej: ' ' para 'FF 0A'")
-        self.txt_hex_sep.textChanged.connect(lambda t: self.orchestrator.update_serial_params(hex_separator=t))
-        serial_layout.addWidget(self.txt_hex_sep)
+        self.btn_raw_format = QPushButton("Formato RAW (Tipo/Hex)")
+        self.btn_raw_format.clicked.connect(self.open_raw_format_dialog)
+        serial_layout.addWidget(self.btn_raw_format)
+        
+        self.btn_channel_config = QPushButton("Configurar Canales (Color/Vis)")
+        self.btn_channel_config.clicked.connect(self.open_channel_config_window)
+        serial_layout.addWidget(self.btn_channel_config)
         
         self.btn_connect = QPushButton("Conectar")
         self.btn_connect.setCheckable(True)
@@ -339,12 +340,13 @@ class MainWindow(QMainWindow):
         sidebar_layout.addWidget(self.btn_open_plugin_panel)
         
         sidebar_layout.addStretch()
-        
+
         # Agregar al splitter
         self.splitter.addWidget(graph_container)
         self.splitter.addWidget(self.sidebar)
         self.splitter.setStretchFactor(0, 3)
         self.splitter.setStretchFactor(1, 1)
+        self.open_channel_config_window()
 
     def on_source_changed(self, index):
         sources = ['generator', 'audio', 'serial']
@@ -429,6 +431,45 @@ class MainWindow(QMainWindow):
             self.btn_connect.setText("Conectar")
             self.btn_connect.setChecked(False)
             self.statusBar().showMessage("Serial desconectado")
+
+    def open_raw_format_dialog(self):
+        from core.raw_format_dialog import RawFormatDialog
+        dialog = RawFormatDialog(
+            current_data_type=self.serial_data_type,
+            current_hex_sep=self.serial_hex_sep,
+            current_num_channels=self.serial_num_channels,
+            parent=self
+        )
+        dialog.config_applied.connect(self.on_raw_format_applied)
+        dialog.exec()
+
+    def open_channel_config_window(self):
+        if not hasattr(self, 'channel_config_window') or self.channel_config_window is None:
+            from core.channel_config_window import ChannelConfigWindow
+            self.channel_config_window = ChannelConfigWindow(
+                current_num_channels=self.current_detected_channels,
+                current_configs=self.channel_configs,
+                parent=self
+            )
+            self.channels_detected.connect(self.channel_config_window.update_channel_rows)
+            self.channel_config_window.config_changed.connect(self.on_channel_config_changed)
+            
+        self.channel_config_window.show()
+        self.channel_config_window.raise_()
+        
+    def on_raw_format_applied(self, data_type, hex_sep, num_channels):
+        self.serial_data_type = data_type
+        self.serial_hex_sep = hex_sep
+        self.serial_num_channels = num_channels
+        
+        self.orchestrator.update_serial_params(
+            data_type=self.serial_data_type, 
+            hex_separator=self.serial_hex_sep,
+            num_channels=self.serial_num_channels
+        )
+
+    def on_channel_config_changed(self, configs):
+        self.channel_configs = configs
 
     def _connect_signals(self):
         self.orchestrator.data_acquired.connect(self.update_input_plot)
@@ -823,7 +864,17 @@ class MainWindow(QMainWindow):
         self._ensure_curves(num_channels, combined_plot_widget, combined_curves_list, base_pen, name_prefix)
         
         for i in range(num_channels):
-            current_symbol = curves_list[i].opts.get('symbol', None)
+            # Check visibility from configs, default to True if missing
+            visible = True
+            if i in self.channel_configs:
+                visible = self.channel_configs[i].get('visible', True)
+                
+            curves_list[i].setVisible(visible)
+            combined_curves_list[i].setVisible(visible)
+            
+            if not visible:
+                continue
+                
             if self.scatter_mode:
                 if current_symbol != 'o':
                     curves_list[i].setPen(pg.mkPen(None))
@@ -833,20 +884,29 @@ class MainWindow(QMainWindow):
                     combined_curves_list[i].setSymbol('o')
                     combined_curves_list[i].setSymbolSize(3)
             else:
-                if current_symbol is not None:
-                    color = base_pen.color()
-                    color = color.lighter(100 + i * 20)
-                    pen = pg.mkPen(color=color, width=base_pen.width())
-                    curves_list[i].setPen(pen)
-                    curves_list[i].setSymbol(None)
-                    combined_curves_list[i].setPen(pen)
-                    combined_curves_list[i].setSymbol(None)
+                if i in self.channel_configs and 'color' in self.channel_configs[i]:
+                    color = self.channel_configs[i]['color']
+                else:
+                    color = base_pen.color().lighter(100 + i * 20)
+                    
+                pen = pg.mkPen(color=color, width=base_pen.width())
+                curves_list[i].setPen(pen)
+                curves_list[i].setSymbol(None)
+                combined_curves_list[i].setPen(pen)
+                combined_curves_list[i].setSymbol(None)
                 
             curves_list[i].setData(display_data[:, i])
             combined_curves_list[i].setData(display_data[:, i])
 
     @pyqtSlot(object)
     def update_input_plot(self, data):
+        if data.ndim == 1:
+            data = data.reshape(-1, 1)
+        num_channels = data.shape[1]
+        if num_channels > self.current_detected_channels:
+            self.current_detected_channels = num_channels
+            self.channels_detected.emit(num_channels)
+            
         self.input_buffer = self._update_buffer(self.input_buffer, data)
         display_data = self.input_buffer[-self.display_size:]
         self._plot_multi_channel(display_data, self.input_curves, self.combined_input_curves, self.input_plot, self.combined_plot, self.pen_input, '<span style="color: #f0e68c;">●</span> Entrada')

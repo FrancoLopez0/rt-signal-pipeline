@@ -31,6 +31,7 @@ class SerialInput(QObject):
         self.mode = 'csv' # 'csv' o 'raw'
         self.data_type = 'int16'
         self.hex_separator = ''
+        self.num_channels = 1
 
     def set_queue(self, queue):
         """Set the input queue for plugin pipeline integration."""
@@ -42,20 +43,21 @@ class SerialInput(QObject):
         ports = serial.tools.list_ports.comports()
         return [p.device for p in ports]
 
-    def update_config(self, port=None, baudrate=None, mode=None, data_type=None, hex_separator=None):
+    def update_config(self, port=None, baudrate=None, mode=None, data_type=None, hex_separator=None, num_channels=None):
         """Actualiza los parámetros de conexión y la estrategia."""
         if port is not None: self.port = port
         if baudrate is not None: self.baudrate = int(baudrate)
         if mode is not None: self.mode = mode
         if data_type is not None: self.data_type = data_type
         if hex_separator is not None: self.hex_separator = hex_separator
+        if num_channels is not None: self.num_channels = int(num_channels)
 
         if self.mode == 'csv':
             self.strategy = CsvStrategy()
         elif self.mode == 'xy_colon':
             self.strategy = XYColonStrategy()
         else:
-            self.strategy = RawStrategy(data_type=self.data_type, hex_separator=self.hex_separator)
+            self.strategy = RawStrategy(data_type=self.data_type, hex_separator=self.hex_separator, num_channels=self.num_channels)
 
     def start(self):
         """Inicia el hilo de lectura serial."""
