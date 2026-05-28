@@ -32,6 +32,7 @@ class SerialInput(QObject):
         self.data_type = 'int16'
         self.hex_separator = ''
         self.num_channels = 1
+        self._leftover = b''
 
     def set_queue(self, queue):
         """Set the input queue for plugin pipeline integration."""
@@ -56,6 +57,8 @@ class SerialInput(QObject):
             self.strategy = CsvStrategy()
         else:
             self.strategy = RawStrategy(data_type=self.data_type, hex_separator=self.hex_separator, num_channels=self.num_channels)
+            
+        self._leftover = b''
 
     def start(self):
         """Inicia el hilo de lectura serial."""
@@ -87,7 +90,7 @@ class SerialInput(QObject):
 
     def _read_loop(self):
         """Bucle de lectura que alimenta el buffer y emite señales."""
-        leftover = b''
+        self._leftover = b''
         while self.running:
             try:
                 if self.ser and self.ser.in_waiting > 0:
@@ -95,8 +98,8 @@ class SerialInput(QObject):
                     if not raw_data:
                         continue
                     
-                    data_to_parse = leftover + raw_data
-                    parsed_data, leftover = self.strategy.parse(data_to_parse)
+                    data_to_parse = self._leftover + raw_data
+                    parsed_data, self._leftover = self.strategy.parse(data_to_parse)
                     
                     if parsed_data.size > 0:
                         # parsed_data is (num_samples, num_channels)

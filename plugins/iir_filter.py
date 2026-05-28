@@ -345,12 +345,26 @@ class IIRFilterDSP(BaseProcessDSP):
             return data
             
         try:
-            # Validar dimensión del estado por si hubo corrupción en cambios concurrentes
-            expected_zi_shape = (sos.shape[0], 2)
-            if zi is None or zi.shape != expected_zi_shape:
-                zi = sosfilt_zi(sos)
+            if data.ndim == 1:
+                data = data.reshape(-1, 1)
                 
-            filtered, new_zi = sosfilt(sos, data, zi=zi)
+            n_samples, n_channels = data.shape
+            
+            # Validar dimensión del estado (n_sections, 2, n_channels) para axis=0
+            expected_zi_shape = (sos.shape[0], 2, n_channels)
+            
+            if zi is None:
+                zi_base = sosfilt_zi(sos)
+                zi = np.repeat(zi_base[:, :, np.newaxis], n_channels, axis=2)
+            elif zi.ndim == 2:
+                # Si viene de _calculate_coeffs, tiene shape (n_sections, 2)
+                zi = np.repeat(zi[:, :, np.newaxis], n_channels, axis=2)
+            elif zi.shape != expected_zi_shape:
+                # Si el número de canales cambió repentinamente
+                zi_base = sosfilt_zi(sos)
+                zi = np.repeat(zi_base[:, :, np.newaxis], n_channels, axis=2)
+                
+            filtered, new_zi = sosfilt(sos, data, axis=0, zi=zi)
             
             # Guardar el nuevo estado (el SOS sigue siendo el mismo)
             self._filter_state = (sos, new_zi)

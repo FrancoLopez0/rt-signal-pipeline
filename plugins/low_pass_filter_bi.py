@@ -140,10 +140,34 @@ class LowPassFIRDSP(BaseProcessDSP):
     def process(self, data: np.ndarray) -> np.ndarray:
         if data.size == 0:
             return data
+        
         if self.coeffs is None:
             self._calculate_coeffs()
-        filtered, self.zi = lfilter(self.coeffs, 1.0, data, zi=self.zi)
-        return filtered
+            
+        try:
+            if data.ndim == 1:
+                data = data.reshape(-1, 1)
+                
+            n_samples, n_channels = data.shape
+            
+            numtaps = len(self.coeffs)
+            expected_zi_shape = (numtaps - 1, n_channels)
+            
+            if self.zi is None:
+                zi_base = lfilter_zi(self.coeffs, 1.0) * 0.0
+                self.zi = np.repeat(zi_base[:, np.newaxis], n_channels, axis=1)
+            elif self.zi.ndim == 1:
+                self.zi = np.repeat(self.zi[:, np.newaxis], n_channels, axis=1)
+            elif self.zi.shape != expected_zi_shape:
+                zi_base = lfilter_zi(self.coeffs, 1.0) * 0.0
+                self.zi = np.repeat(zi_base[:, np.newaxis], n_channels, axis=1)
+                
+            filtered, self.zi = lfilter(self.coeffs, 1.0, data, axis=0, zi=self.zi)
+            
+            return filtered
+        except Exception as e:
+            print(f"[FIR Filter] Error en process: {e}")
+            return data
 
 
 class Plugin(BasePlugin):

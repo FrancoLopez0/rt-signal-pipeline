@@ -419,6 +419,7 @@ class MainWindow(QMainWindow):
             if self.orchestrator.serial_in.start():
                 self.btn_connect.setText("Desconectar")
                 self.statusBar().showMessage(f"Serial conectado: {port}")
+                self.open_channel_config_window()
             else:
                 self.btn_connect.setChecked(False)
                 self.statusBar().showMessage("Error: No se pudo conectar al puerto serial")
@@ -885,8 +886,11 @@ class MainWindow(QMainWindow):
             data = data.reshape(-1, 1)
         num_channels = data.shape[1]
         if num_channels > self.current_detected_channels:
+            first_detect = (self.current_detected_channels == 0)
             self.current_detected_channels = num_channels
             self.channels_detected.emit(num_channels)
+            if first_detect:
+                self.open_channel_config_window()
             
         self.input_buffer = self._update_buffer(self.input_buffer, data)
         display_data = self._apply_trigger(self.input_buffer)
