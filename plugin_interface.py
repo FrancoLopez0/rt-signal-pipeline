@@ -6,6 +6,7 @@ import numpy as np
 class BaseProcessUI(QWidget):
     """Se ejecuta en el Main Thread. Emite: (nombre_param, valor)"""
     parameter_changed = pyqtSignal(str, object)
+    print_coeffs_requested = pyqtSignal()
 
 class BaseProcessDSP(ABC):
     """Se ejecuta en el Worker Thread."""
@@ -15,6 +16,10 @@ class BaseProcessDSP(ABC):
 
     @abstractmethod
     def update_parameter(self, name: str, value: object):
+        pass
+
+    def print_coeffs(self):
+        """Override to print filter coefficients. Default: no-op."""
         pass
 
 class BasePlugin(ABC):

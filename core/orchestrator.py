@@ -1,6 +1,7 @@
 import queue
 import importlib.util
 import os
+from functools import partial
 from PyQt6.QtCore import QObject, QThread, pyqtSignal
 from core.threads import AcquisitionWorker, ProcessingWorker, OutputWorker
 from core.inputs.generator_in import SignalGenerator
@@ -30,9 +31,12 @@ class Orchestrator(QObject):
         # Instancias de Input
         self.generator = SignalGenerator(self.sample_rate)
         self.audio_in = AudioInput(self.sample_rate, self.chunk_size)
-        self.serial_in = SerialInput()
+        self.serial_in = SerialInput(input_queue=self.input_queue)
         
         self.current_source = 'generator'
+        
+        # Flag para rastrear si serial está conectado al pipeline
+        self._serial_connected = False
         
         # Referencias a workers y threads
         self.workers = {}
@@ -42,11 +46,19 @@ class Orchestrator(QObject):
         self.current_plugin = None
         self.current_plugin_name = None
 
-    def set_input_source(self, source_type: str):
-        """Cambia la fuente de entrada: 'generator', 'audio', 'serial'."""
+    def set_input_source(self, source_type: str, force_restart=False):
+        """Cambia la fuente de entrada. Solo reinicia el worker si el tipo cambia o se fuerza."""
+        is_same_type = self.current_source == source_type
         self.current_source = source_type
         
-        # Detener fuentes previas si es necesario
+        # Si es el mismo tipo y no forzamos, no hacemos nada (el generador se actualiza solo)
+        if is_same_type and not force_restart and "acquisition" in self.workers:
+            return
+
+        # 1. Detener el worker de adquisición actual si existe
+        self._stop_worker("acquisition")
+
+        # 2. Detener hardware previo
         self.audio_in.stop()
         self.serial_in.stop()
         
@@ -57,12 +69,24 @@ class Orchestrator(QObject):
             self.audio_in.start()
             source_func = self.audio_in.get_chunk
         elif source_type == 'serial':
-            self.serial_in.start()
-            source_func = self.serial_in.get_chunk
-            
-        # Actualizar el worker de adquisición si está corriendo
-        if "acquisition" in self.workers and source_func:
-            self.workers["acquisition"].source_func = source_func
+            # Serial ahora pasa por el pipeline de plugins
+            # El hilo serial ya pone datos en input_queue
+            # Conectar señal para el plot de entrada
+            if not self._serial_connected:
+                self.serial_in.data_updated.connect(self.data_acquired)
+                self._serial_connected = True
+            return  # No iniciar AcquisitionWorker - serial tiene su propio hilo
+
+        # 3. Arrancar el worker si el pipeline está activo
+        if source_func and "processing" in self.workers:
+            self._start_acquisition_worker(source_func)
+
+    def update_serial_params(self, port=None, baudrate=None):
+        """Actualiza la configuración serial."""
+        self.serial_in.update_config(port, baudrate)
+        # Si ya estábamos en serial, reiniciamos para aplicar cambios
+        if self.current_source == 'serial' and "acquisition" in self.workers:
+            self.set_input_source('serial')
 
     def toggle_audio_output(self, enabled: bool):
         """Activa o desactiva la salida de audio por hardware."""
@@ -85,12 +109,19 @@ class Orchestrator(QObject):
             ui = self.current_plugin.get_ui()
             dsp = self.current_plugin.get_dsp()
             
-            # Conectar señales de la UI al DSP para actualización de parámetros
-            ui.parameter_changed.connect(lambda name, val: dsp.update_parameter(name, val))
+            # Guardar referencia al DSP para uso en conexión
+            self._current_dsp = dsp
+            
+            # Conectar señales de la UI al DSP usando functools.partial para evitar problemas de closure
+            ui.parameter_changed.connect(partial(self._on_plugin_param_changed, dsp))
+            ui.print_coeffs_requested.connect(dsp.print_coeffs)
             
             # Actualizar el Worker de procesamiento si está activo
             if "processing" in self.workers:
                 self.workers["processing"].set_plugin_dsp(dsp)
+                print(f"[Orchestrator] Plugin DSP configurado: {module_name}")
+            else:
+                print(f"[Orchestrator] Plugin cargado (DSP pendiente): {module_name}")
                 
             return ui
             
@@ -98,63 +129,73 @@ class Orchestrator(QObject):
             self.error_occurred.emit(f"Error cargando plugin: {str(e)}")
             return None
 
+    def _on_plugin_param_changed(self, dsp, name, value):
+        """Callback para parámetros de plugin. Usa referencia directa al DSP."""
+        dsp.update_parameter(name, value)
+
     def start_pipeline(self):
         """Arranca todos los hilos del pipeline."""
-        # 1. Acquisition Thread
-        self.set_input_source(self.current_source)
-        source_func = None
-        if self.current_source == 'generator': source_func = self.generator.generate_chunk
-        elif self.current_source == 'audio': source_func = self.audio_in.get_chunk
-        elif self.current_source == 'serial': source_func = self.serial_in.get_chunk
+        self.stop_pipeline() # Asegurar estado limpio
 
-        self.workers["acquisition"] = AcquisitionWorker(source_func, self.sample_rate, self.chunk_size)
-        self.workers["acquisition"].out_queue = self.input_queue
-        
-        # 2. Processing Thread
+        # 1. Processing Thread
         self.workers["processing"] = ProcessingWorker(self.input_queue, self.output_queue)
         if self.current_plugin:
             self.workers["processing"].set_plugin_dsp(self.current_plugin.get_dsp())
             
-        # 3. Output/Consumer Thread
+        # 2. Output/Consumer Thread
         self.workers["output"] = OutputWorker(self.output_queue, self.sample_rate, self.chunk_size)
         
-        # Setup signals and start threads
-        for name, worker in self.workers.items():
+        # Start core workers
+        for name in ["processing", "output"]:
+            worker = self.workers[name]
             self.threads[name] = QThread()
             worker.moveToThread(self.threads[name])
-            
-            # Conexión de inicio/parada
             self.threads[name].started.connect(worker.run)
             worker.finished.connect(self.threads[name].quit)
             worker.error.connect(self.error_occurred)
-            
-            # Conectar señales de datos a la UI (vía Orquestador)
-            if name == "acquisition":
-                worker.data_ready.connect(self.data_acquired)
-            elif name == "processing":
+            if name == "processing":
                 worker.processed_ready.connect(self.data_processed)
-                
             self.threads[name].start()
+
+        # 3. Acquisition Thread (via set_input_source logic)
+        self.set_input_source(self.current_source)
+
+    def _start_acquisition_worker(self, source_func):
+        worker = AcquisitionWorker(source_func, self.sample_rate, self.chunk_size)
+        worker.out_queue = self.input_queue
+        thread = QThread()
+        worker.moveToThread(thread)
+        
+        thread.started.connect(worker.run)
+        worker.finished.connect(thread.quit)
+        worker.error.connect(self.error_occurred)
+        worker.data_ready.connect(self.data_acquired)
+        
+        self.workers["acquisition"] = worker
+        self.threads["acquisition"] = thread
+        thread.start()
+
+    def _stop_worker(self, name):
+        if name in self.workers:
+            worker = self.workers[name]
+            thread = self.threads[name]
+            worker.stop()
+            thread.quit()
+            if not thread.wait(1000):
+                thread.terminate()
+                thread.wait()
+            del self.workers[name]
+            del self.threads[name]
 
     def stop_pipeline(self):
         """Detiene de forma segura todos los hilos."""
-        # 1. Señalizar a los workers que deben parar
-        for name, worker in self.workers.items():
-            worker.stop()
+        for name in list(self.workers.keys()):
+            self._stop_worker(name)
             
-        # 2. Esperar a que los hilos terminen grácilmente
-        for name, thread in self.threads.items():
-            if thread.isRunning():
-                thread.quit()
-                if not thread.wait(2000): # Esperar hasta 2s
-                    print(f"Warning: Thread {name} did not stop gracefully, terminating.")
-                    thread.terminate()
-                    thread.wait()
-                
-        self.workers.clear()
-        self.threads.clear()
+        self.audio_in.stop()
+        self.serial_in.stop()
         
-        # 3. Limpiar colas para evitar que datos antiguos queden atrapados
+        # Limpiar colas
         try:
             while not self.input_queue.empty(): self.input_queue.get_nowait()
             while not self.output_queue.empty(): self.output_queue.get_nowait()
