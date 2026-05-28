@@ -321,6 +321,12 @@ class MainWindow(QMainWindow):
         self.check_audio_out.toggled.connect(self.orchestrator.toggle_audio_output)
         sidebar_layout.addWidget(self.check_audio_out)
         
+        # Export CSV Button
+        sidebar_layout.addSpacing(10)
+        self.btn_export_csv = QPushButton("Exportar Datos a CSV")
+        self.btn_export_csv.clicked.connect(self.export_to_csv)
+        sidebar_layout.addWidget(self.btn_export_csv)
+        
         sidebar_layout.addSpacing(10)
         sidebar_layout.addWidget(QLabel("<b>Gestión de Plugins</b>"))
         self.btn_load = QPushButton("Cargar Plugin (.py)")
@@ -753,7 +759,7 @@ class MainWindow(QMainWindow):
             color = color.lighter(100 + len(curve_list) * 20)
             pen = pg.mkPen(color=color, width=base_pen.width())
             name = f"{name_prefix} {len(curve_list)+1}" if name_prefix else None
-            curve = plot_widget.plot(pen=pen, clipToView=False, name=name)
+            curve = plot_widget.plot(pen=pen, clipToView=True, autoDownsample=True, name=name)
             curve_list.append(curve)
         while len(curve_list) > num_channels:
             curve = curve_list.pop()
@@ -791,18 +797,21 @@ class MainWindow(QMainWindow):
                 combined_curves_list[i].setData([], [])
                 
             i = 0
+            current_symbol = curves_list[i].opts.get('symbol', None)
             if self.scatter_mode:
-                curves_list[i].setPen(None)
-                curves_list[i].setSymbol('o')
-                curves_list[i].setSymbolSize(3)
-                combined_curves_list[i].setPen(None)
-                combined_curves_list[i].setSymbol('o')
-                combined_curves_list[i].setSymbolSize(3)
+                if current_symbol != 'o':
+                    curves_list[i].setPen(pg.mkPen(None))
+                    curves_list[i].setSymbol('o')
+                    curves_list[i].setSymbolSize(3)
+                    combined_curves_list[i].setPen(pg.mkPen(None))
+                    combined_curves_list[i].setSymbol('o')
+                    combined_curves_list[i].setSymbolSize(3)
             else:
-                curves_list[i].setPen(base_pen)
-                curves_list[i].setSymbol(None)
-                combined_curves_list[i].setPen(base_pen)
-                combined_curves_list[i].setSymbol(None)
+                if current_symbol is not None:
+                    curves_list[i].setPen(base_pen)
+                    curves_list[i].setSymbol(None)
+                    combined_curves_list[i].setPen(base_pen)
+                    combined_curves_list[i].setSymbol(None)
                 
             if num_channels >= 2:
                 sort_idx = np.argsort(display_data[:, 0])
@@ -814,21 +823,24 @@ class MainWindow(QMainWindow):
         self._ensure_curves(num_channels, combined_plot_widget, combined_curves_list, base_pen, name_prefix)
         
         for i in range(num_channels):
+            current_symbol = curves_list[i].opts.get('symbol', None)
             if self.scatter_mode:
-                curves_list[i].setPen(None)
-                curves_list[i].setSymbol('o')
-                curves_list[i].setSymbolSize(3)
-                combined_curves_list[i].setPen(None)
-                combined_curves_list[i].setSymbol('o')
-                combined_curves_list[i].setSymbolSize(3)
+                if current_symbol != 'o':
+                    curves_list[i].setPen(pg.mkPen(None))
+                    curves_list[i].setSymbol('o')
+                    curves_list[i].setSymbolSize(3)
+                    combined_curves_list[i].setPen(pg.mkPen(None))
+                    combined_curves_list[i].setSymbol('o')
+                    combined_curves_list[i].setSymbolSize(3)
             else:
-                color = base_pen.color()
-                color = color.lighter(100 + i * 20)
-                pen = pg.mkPen(color=color, width=base_pen.width())
-                curves_list[i].setPen(pen)
-                curves_list[i].setSymbol(None)
-                combined_curves_list[i].setPen(pen)
-                combined_curves_list[i].setSymbol(None)
+                if current_symbol is not None:
+                    color = base_pen.color()
+                    color = color.lighter(100 + i * 20)
+                    pen = pg.mkPen(color=color, width=base_pen.width())
+                    curves_list[i].setPen(pen)
+                    curves_list[i].setSymbol(None)
+                    combined_curves_list[i].setPen(pen)
+                    combined_curves_list[i].setSymbol(None)
                 
             curves_list[i].setData(display_data[:, i])
             combined_curves_list[i].setData(display_data[:, i])
@@ -952,3 +964,31 @@ class MainWindow(QMainWindow):
     def _on_plugin_window_closed(self, result):
         """Limpia la referencia cuando se cierra la ventana del plugin."""
         self.plugin_window = None
+
+    def export_to_csv(self):
+        """Exporta los datos actuales del plot a un archivo CSV."""
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Guardar Datos como CSV", "export_data.csv", "CSV Files (*.csv)"
+        )
+        if not file_path:
+            return
+            
+        try:
+            # Obtener datos mostrados
+            is_xy_mode = (self.orchestrator.current_source == 'serial' and self.orchestrator.serial_in.mode == 'xy_colon')
+            
+            if is_xy_mode:
+                data = self.input_buffer[-self.display_size:]
+                if data.shape[1] >= 2:
+                    header = "X,Y"
+                else:
+                    header = "Data"
+            else:
+                data = self.output_buffer[-self.display_size:]
+                header = ",".join([f"Channel_{i}" for i in range(data.shape[1])])
+                
+            np.savetxt(file_path, data, delimiter=",", header=header, comments="")
+            self.statusBar().showMessage(f"Datos guardados exitosamente en {os.path.basename(file_path)}")
+            
+        except Exception as e:
+            self.show_error(f"Error al guardar CSV: {e}")

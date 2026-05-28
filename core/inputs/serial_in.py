@@ -96,6 +96,9 @@ class SerialInput(QObject):
                         continue
                     
                     data_to_parse = leftover + raw_data
+                    if len(data_to_parse) > 8192:
+                        # Prevent unbounded growth if no parsing succeeds
+                        data_to_parse = data_to_parse[-8192:]
                     parsed_data, leftover = self.strategy.parse(data_to_parse)
                     
                     if parsed_data.size > 0:

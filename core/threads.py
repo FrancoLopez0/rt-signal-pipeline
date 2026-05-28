@@ -35,7 +35,10 @@ class AcquisitionWorker(PipelineWorker):
             try:
                 data = self.source_func(self.chunk_size)
                 if self.out_queue:
-                    self.out_queue.put(data)
+                    try:
+                        self.out_queue.put_nowait(data)
+                    except queue.Full:
+                        pass
                 self.data_ready.emit(data)
             except Exception as e:
                 self.error.emit(str(e))
@@ -73,7 +76,10 @@ class ProcessingWorker(PipelineWorker):
                     processed_data = data 
                 
                 if self.out_queue:
-                    self.out_queue.put(processed_data)
+                    try:
+                        self.out_queue.put_nowait(processed_data)
+                    except queue.Full:
+                        pass
                 self.processed_ready.emit(processed_data)
                 
             except queue.Empty:
