@@ -46,6 +46,37 @@ class CsvStrategy(SerialParsingStrategy):
         
         return np.array(padded_data, dtype=np.float32), leftover_bytes
 
+class XYColonStrategy(SerialParsingStrategy):
+    def parse(self, raw_data: bytes) -> tuple[np.ndarray, bytes]:
+        """
+        Parses 'x:y' formatted lines.
+        Returns a (N, 2) numpy array.
+        """
+        text = raw_data.decode('utf-8', errors='ignore')
+        lines = text.split('\n')
+        
+        parsed_data = []
+        leftover_text = lines.pop() if not raw_data.endswith(b'\n') else ""
+        leftover_bytes = leftover_text.encode('utf-8')
+        
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split(':')
+            if len(parts) == 2:
+                try:
+                    x = float(parts[0].strip())
+                    y = float(parts[1].strip())
+                    parsed_data.append([x, y])
+                except ValueError:
+                    pass
+                    
+        if not parsed_data:
+            return np.array([]).reshape(0, 2), leftover_bytes
+            
+        return np.array(parsed_data, dtype=np.float32), leftover_bytes
+
 class RawStrategy(SerialParsingStrategy):
     def __init__(self, data_type: str = 'int16', hex_separator: str = '', num_channels: int = 1):
         self.data_type = data_type
