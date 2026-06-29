@@ -34,7 +34,7 @@ class Orchestrator(QObject):
         self.serial_in = SerialInput(input_queue=self.input_queue)
         self.serial_in.data_updated.connect(self.data_acquired)
         
-        self.current_source = 'generator'
+        self.current_source = 'serial'
         
         # Referencias a workers y threads
         self.workers = {}

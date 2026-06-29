@@ -4,7 +4,7 @@ import pyqtgraph as pg
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                              QPushButton, QFileDialog, QLabel, QFrame, QSplitter, 
                              QMessageBox, QComboBox, QCheckBox, QSlider, QTabWidget,
-                             QSpinBox, QDoubleSpinBox, QDialog, QLineEdit)
+                             QSpinBox, QDoubleSpinBox, QDialog, QLineEdit, QScrollArea)
 from PyQt6.QtCore import Qt, pyqtSlot, pyqtSignal
 from core.orchestrator import Orchestrator
 
@@ -23,13 +23,6 @@ class MainWindow(QMainWindow):
         self.display_size = 1024 
         self.input_buffer = np.zeros((self.buffer_size, 1))
         self.output_buffer = np.zeros((self.buffer_size, 1))
-        
-        self.show_fft = True
-        self.scatter_mode = False
-        
-        # Buffer para suavizado espectral (Persistancia)
-        self.fft_smoothed = None
-        self.fft_alpha = 0.15 # Factor de suavizado (0.0 a 1.0)
         
         # Sistema de double-buffering para evitar bloqueos de UI
         self._input_data_ready = False
@@ -102,7 +95,7 @@ class MainWindow(QMainWindow):
         # Plot de entrada
         self.input_plot = pg.PlotWidget(title="<span style='color: #f0e68c;'>⬤</span> Entrada (Tiempo)")
         self.input_plot.setStyleSheet("background-color: #161b22; border-radius: 6px;")
-        self.input_plot.setLimits(xMin=0, xMax=self.plot_x_max*2, yMin=-10000, yMax=10000)  # Limitar rangos
+        self.input_plot.setLimits(xMin=0, xMax=1024, yMin=-10000, yMax=10000)  # Limitar rangos
         self.input_plot.setXRange(0, self.plot_x_max, padding=0)
         self.input_plot.setYRange(self.plot_y_min, self.plot_y_max, padding=0)
         self.input_plot.showGrid(x=True, y=True, alpha=0.3)
@@ -111,13 +104,20 @@ class MainWindow(QMainWindow):
         self.input_plot.getAxis('bottom').setTextPen('#8b949e')
         self.input_plot.getAxis('left').setTextPen('#8b949e')
         # Crear curva para entrada
+        self.max_channels = 8
         self.input_curves = []
+        for i in range(self.max_channels):
+            color = self.pen_input.color().lighter(100 + i * 20)
+            pen = pg.mkPen(color=color, width=self.pen_input.width())
+            curve = self.input_plot.plot(pen=pen, clipToView=True, autoDownsample=True, name=f"Entrada {i+1}")
+            curve.setVisible(False)
+            self.input_curves.append(curve)
         tab_separado_layout.addWidget(self.input_plot)
         
         # Plot de salida
         self.output_plot = pg.PlotWidget(title="<span style='color: #00d9ff;'>⬤</span> Procesada (Tiempo)")
         self.output_plot.setStyleSheet("background-color: #161b22; border-radius: 6px;")
-        self.output_plot.setLimits(xMin=0, xMax=self.plot_x_max*2, yMin=-10000, yMax=10000)
+        self.output_plot.setLimits(xMin=0, xMax=1024, yMin=-10000, yMax=10000)
         self.output_plot.setXRange(0, self.plot_x_max, padding=0)
         self.output_plot.setYRange(self.plot_y_min, self.plot_y_max, padding=0)
         self.output_plot.showGrid(x=True, y=True, alpha=0.3)
@@ -127,22 +127,13 @@ class MainWindow(QMainWindow):
         self.output_plot.getAxis('left').setTextPen('#8b949e')
         # Crear curva para salida
         self.output_curves = []
+        for i in range(self.max_channels):
+            color = self.pen_output.color().lighter(100 + i * 20)
+            pen = pg.mkPen(color=color, width=self.pen_output.width())
+            curve = self.output_plot.plot(pen=pen, clipToView=True, autoDownsample=True, name=f"Salida {i+1}")
+            curve.setVisible(False)
+            self.output_curves.append(curve)
         tab_separado_layout.addWidget(self.output_plot)
-        
-        # FFT plot
-        self.fft_plot = pg.PlotWidget(title="<span style='color: #00ff88;'>⬤</span> Espectro de Frecuencia (FFT)")
-        self.fft_plot.setStyleSheet("background-color: #161b22; border-radius: 6px;")
-        self.fft_curves = []
-        self.fft_plot.setLogMode(x=True, y=False)
-        self.fft_plot.showGrid(x=True, y=True, alpha=0.3)
-        self.fft_plot.getAxis('bottom').setPen('#484f58')
-        self.fft_plot.getAxis('left').setPen('#484f58')
-        self.fft_plot.getAxis('bottom').setTextPen('#8b949e')
-        self.fft_plot.getAxis('left').setTextPen('#8b949e')
-        self.fft_plot.setYRange(-60, 40, padding=0)
-        self.fft_plot.setVisible(False)
-        tab_separado_layout.addWidget(self.fft_plot)
-        
         self.graph_tabs.addTab(tab_separado, "Tiempo")
         
         # ===== TAB 2: Combinado (Entrada + Salida en un solo gráfico) =====
@@ -153,7 +144,7 @@ class MainWindow(QMainWindow):
         
         self.combined_plot = pg.PlotWidget(title="Entrada y Salida Combinadas")
         self.combined_plot.setStyleSheet("background-color: #161b22; border-radius: 6px;")
-        self.combined_plot.setLimits(xMin=0, xMax=self.plot_x_max*2, yMin=-10, yMax=10)
+        self.combined_plot.setLimits(xMin=0, xMax=1024, yMin=-10, yMax=10)
         self.combined_plot.setXRange(0, self.plot_x_max, padding=0)
         self.combined_plot.setYRange(self.plot_y_min, self.plot_y_max, padding=0)
         self.combined_plot.showGrid(x=True, y=True, alpha=0.3)
@@ -164,32 +155,97 @@ class MainWindow(QMainWindow):
         # curvas line para combinado
         self.combined_input_curves = []
         self.combined_output_curves = []
+        for i in range(self.max_channels):
+            color_in = self.pen_input.color().lighter(100 + i * 20)
+            pen_in = pg.mkPen(color=color_in, width=self.pen_input.width())
+            curve_in = self.combined_plot.plot(pen=pen_in, clipToView=True, autoDownsample=True, name=f"In {i+1}")
+            curve_in.setVisible(False)
+            self.combined_input_curves.append(curve_in)
+            
+            color_out = self.pen_output.color().lighter(100 + i * 20)
+            pen_out = pg.mkPen(color=color_out, width=self.pen_output.width())
+            curve_out = self.combined_plot.plot(pen=pen_out, clipToView=True, autoDownsample=True, name=f"Out {i+1}")
+            curve_out.setVisible(False)
+            self.combined_output_curves.append(curve_out)
         # Agregar leyenda
         self.combined_plot.addLegend(offset=(10, 10))
         tab_combinado_layout.addWidget(self.combined_plot)
         
         self.graph_tabs.addTab(tab_combinado, "Combinado")
         
+        # ===== TAB 3: FFT =====
+        tab_fft = QWidget()
+        tab_fft.setStyleSheet("background-color: #0d1117;")
+        tab_fft_layout = QVBoxLayout(tab_fft)
+        tab_fft_layout.setContentsMargins(4, 4, 4, 4)
+        
+        self.fft_time_plot = pg.PlotWidget(title="Entrada (Tiempo)")
+        self.fft_time_plot.setStyleSheet("background-color: #161b22; border-radius: 6px;")
+        self.fft_time_plot.setLimits(xMin=0, xMax=1024, yMin=-10000, yMax=10000)
+        self.fft_time_plot.setXRange(0, self.plot_x_max, padding=0)
+        self.fft_time_plot.setYRange(self.plot_y_min, self.plot_y_max, padding=0)
+        self.fft_time_plot.showGrid(x=True, y=True, alpha=0.3)
+        self.fft_time_plot.getAxis('bottom').setPen('#484f58')
+        self.fft_time_plot.getAxis('left').setPen('#484f58')
+        self.fft_time_plot.getAxis('bottom').setTextPen('#8b949e')
+        self.fft_time_plot.getAxis('left').setTextPen('#8b949e')
+        self.fft_time_curves = []
+        for i in range(self.max_channels):
+            color = self.pen_input.color().lighter(100 + i * 20)
+            pen = pg.mkPen(color=color, width=self.pen_input.width())
+            curve = self.fft_time_plot.plot(pen=pen, clipToView=True, autoDownsample=True, name=f"Entrada {i+1}")
+            curve.setVisible(False)
+            self.fft_time_curves.append(curve)
+        tab_fft_layout.addWidget(self.fft_time_plot)
+        
+        self.fft_freq_plot = pg.PlotWidget(title="Espectro (FFT)")
+        self.fft_freq_plot.setStyleSheet("background-color: #161b22; border-radius: 6px;")
+        self.fft_freq_plot.showGrid(x=True, y=True, alpha=0.3)
+        self.fft_freq_plot.getAxis('bottom').setPen('#484f58')
+        self.fft_freq_plot.getAxis('left').setPen('#484f58')
+        self.fft_freq_plot.getAxis('bottom').setTextPen('#8b949e')
+        self.fft_freq_plot.getAxis('left').setTextPen('#8b949e')
+        self.fft_freq_plot.setLabel('bottom', 'Frecuencia (Hz)')
+        self.fft_freq_plot.setLabel('left', 'Magnitud')
+        self.fft_freq_plot.getPlotItem().showAxis('bottom')
+        self.fft_freq_plot.setLogMode(x=False, y=False)
+        self.fft_freq_curves = []
+        for i in range(self.max_channels):
+            color = self.pen_input.color().lighter(100 + i * 20)
+            pen = pg.mkPen(color=color, width=self.pen_input.width())
+            curve = self.fft_freq_plot.plot(pen=pen, clipToView=True, autoDownsample=True, name=f"FFT {i+1}")
+            curve.setVisible(False)
+            self.fft_freq_curves.append(curve)
+        tab_fft_layout.addWidget(self.fft_freq_plot)
+        
+        self.graph_tabs.addTab(tab_fft, "FFT")
+        
         # --- PANEL DE CONTROL (SIDEBAR) ---
-        self.sidebar = QFrame()
+        self.sidebar = QScrollArea()
         self.sidebar.setObjectName("sidebar")
         self.sidebar.setMinimumWidth(320)
+        self.sidebar.setWidgetResizable(True)
         self.sidebar.setStyleSheet("""
-            QFrame#sidebar {
+            QScrollArea#sidebar {
                 background-color: #161b22;
                 border-left: 2px solid #30363d;
                 border-radius: 0px;
-                padding: 12px;
+                border-top: none;
+                border-right: none;
+                border-bottom: none;
             }
         """)
-        sidebar_layout = QVBoxLayout(self.sidebar)
+        sidebar_content = QWidget()
+        sidebar_content.setStyleSheet("background-color: #161b22;")
+        self.sidebar.setWidget(sidebar_content)
+        sidebar_layout = QVBoxLayout(sidebar_content)
         sidebar_layout.setContentsMargins(12, 16, 12, 12)
         sidebar_layout.setSpacing(10)
         
         # Selección de Entrada
         sidebar_layout.addWidget(QLabel("<b>Fuente de Entrada</b>"))
         self.combo_source = QComboBox()
-        self.combo_source.addItems(["Generador", "Audio (Mic)", "Serial (USB)"])
+        self.combo_source.addItems(["Serial (USB)", "Generador", "Audio (Mic)"])
         self.combo_source.currentIndexChanged.connect(self.on_source_changed)
         sidebar_layout.addWidget(self.combo_source)
         
@@ -273,36 +329,86 @@ class MainWindow(QMainWindow):
         sidebar_layout.addWidget(QLabel("<b>Visualización / Audio</b>"))
         
 
-        # FFT Toggle
-        self.check_fft = QCheckBox("Mostrar FFT")
-        self.check_fft.setChecked(True)
-        self.check_fft.toggled.connect(self.toggle_fft_visibility)
-        sidebar_layout.addWidget(self.check_fft)
-        
-        # Scatter Mode Toggle
-        self.check_scatter = QCheckBox("Modo Scatter")
-        self.check_scatter.setChecked(False)
-        self.check_scatter.toggled.connect(self.toggle_scatter_mode)
-        sidebar_layout.addWidget(self.check_scatter)
-        
         # Controles de Ventana Y
         sidebar_layout.addSpacing(5)
         y_range_label = QLabel("Rango Y:")
         sidebar_layout.addWidget(y_range_label)
         
         y_range_layout = QHBoxLayout()
-        self.lbl_y_min = QLabel("-1.0")
-        y_range_layout.addWidget(self.lbl_y_min)
+        self.spin_y_min = QDoubleSpinBox()
+        self.spin_y_min.setRange(-10000.0, 10000.0)
+        self.spin_y_min.setValue(-1.0)
+        self.spin_y_min.setDecimals(2)
+        self.spin_y_min.valueChanged.connect(self.on_y_range_changed)
+        y_range_layout.addWidget(self.spin_y_min)
+        
         y_range_layout.addWidget(QLabel("to"))
+        
         self.spin_y_max = QDoubleSpinBox()
-        self.spin_y_max.setRange(0.1, 10.0)
+        self.spin_y_max.setRange(-10000.0, 10000.0)
         self.spin_y_max.setValue(1.0)
-        self.spin_y_max.setDecimals(1)
+        self.spin_y_max.setDecimals(2)
         self.spin_y_max.valueChanged.connect(self.on_y_range_changed)
         y_range_layout.addWidget(self.spin_y_max)
-        self.lbl_y_max = QLabel("1.0")
-        y_range_layout.addWidget(self.lbl_y_max)
         sidebar_layout.addLayout(y_range_layout)
+        
+        self.btn_auto_y = QPushButton("Auto-Ajustar Y")
+        self.btn_auto_y.clicked.connect(self.auto_adjust_y)
+        sidebar_layout.addWidget(self.btn_auto_y)
+        
+        # Controles de Ventana Y (FFT)
+        sidebar_layout.addSpacing(5)
+        fft_y_range_label = QLabel("Rango Y (FFT):")
+        sidebar_layout.addWidget(fft_y_range_label)
+        
+        fft_y_range_layout = QHBoxLayout()
+        self.fft_spin_y_min = QDoubleSpinBox()
+        self.fft_spin_y_min.setRange(-10000.0, 10000.0)
+        self.fft_spin_y_min.setValue(0.0)
+        self.fft_spin_y_min.setDecimals(2)
+        self.fft_spin_y_min.valueChanged.connect(self.on_fft_y_range_changed)
+        fft_y_range_layout.addWidget(self.fft_spin_y_min)
+        
+        fft_y_range_layout.addWidget(QLabel("to"))
+        
+        self.fft_spin_y_max = QDoubleSpinBox()
+        self.fft_spin_y_max.setRange(-10000.0, 10000.0)
+        self.fft_spin_y_max.setValue(100.0)
+        self.fft_spin_y_max.setDecimals(2)
+        self.fft_spin_y_max.valueChanged.connect(self.on_fft_y_range_changed)
+        fft_y_range_layout.addWidget(self.fft_spin_y_max)
+        sidebar_layout.addLayout(fft_y_range_layout)
+        
+        self.btn_auto_fft_y = QPushButton("Auto-Ajustar Y FFT")
+        self.btn_auto_fft_y.clicked.connect(self.auto_adjust_fft_y)
+        sidebar_layout.addWidget(self.btn_auto_fft_y)
+        
+        # Controles de Ventana X (FFT)
+        sidebar_layout.addSpacing(5)
+        fft_x_range_label = QLabel("Ventana X (FFT) Hz:")
+        sidebar_layout.addWidget(fft_x_range_label)
+        
+        fft_x_range_layout = QHBoxLayout()
+        self.fft_spin_x_min = QDoubleSpinBox()
+        self.fft_spin_x_min.setRange(0.0, 1000000.0)
+        self.fft_spin_x_min.setValue(0.0)
+        self.fft_spin_x_min.setDecimals(1)
+        self.fft_spin_x_min.valueChanged.connect(self.on_fft_x_range_changed)
+        fft_x_range_layout.addWidget(self.fft_spin_x_min)
+        
+        fft_x_range_layout.addWidget(QLabel("to"))
+        
+        self.fft_spin_x_max = QDoubleSpinBox()
+        self.fft_spin_x_max.setRange(0.0, 1000000.0)
+        self.fft_spin_x_max.setValue(22050.0)
+        self.fft_spin_x_max.setDecimals(1)
+        self.fft_spin_x_max.valueChanged.connect(self.on_fft_x_range_changed)
+        fft_x_range_layout.addWidget(self.fft_spin_x_max)
+        sidebar_layout.addLayout(fft_x_range_layout)
+        
+        self.btn_auto_fft_x = QPushButton("Auto-Ajustar X FFT")
+        self.btn_auto_fft_x.clicked.connect(self.auto_adjust_fft_x)
+        sidebar_layout.addWidget(self.btn_auto_fft_x)
         
         # Controles de Ventana X
         sidebar_layout.addSpacing(5)
@@ -310,12 +416,24 @@ class MainWindow(QMainWindow):
         sidebar_layout.addWidget(x_range_label)
         
         x_range_layout = QHBoxLayout()
-        self.spin_x_range = QSpinBox()
-        self.spin_x_range.setRange(256, 8192)
-        self.spin_x_range.setValue(1024)
-        self.spin_x_range.valueChanged.connect(self.on_x_range_changed)
-        x_range_layout.addWidget(self.spin_x_range)
+        self.spin_x_min = QSpinBox()
+        self.spin_x_min.setRange(0, 1024)
+        self.spin_x_min.setValue(0)
+        self.spin_x_min.valueChanged.connect(self.on_x_range_changed)
+        x_range_layout.addWidget(self.spin_x_min)
+        
+        x_range_layout.addWidget(QLabel("to"))
+        
+        self.spin_x_max = QSpinBox()
+        self.spin_x_max.setRange(10, 1024)
+        self.spin_x_max.setValue(1024)
+        self.spin_x_max.valueChanged.connect(self.on_x_range_changed)
+        x_range_layout.addWidget(self.spin_x_max)
         sidebar_layout.addLayout(x_range_layout)
+        
+        self.btn_auto_x = QPushButton("Auto-Ajustar X")
+        self.btn_auto_x.clicked.connect(self.auto_adjust_x)
+        sidebar_layout.addWidget(self.btn_auto_x)
         
         # Audio Out Toggle
         self.check_audio_out = QCheckBox("Salida de Audio (Hardware)")
@@ -346,10 +464,13 @@ class MainWindow(QMainWindow):
         self.splitter.addWidget(self.sidebar)
         self.splitter.setStretchFactor(0, 3)
         self.splitter.setStretchFactor(1, 1)
+        
+        # Ensure correct initial state for source
+        self.on_source_changed(self.combo_source.currentIndex())
         self.open_channel_config_window()
 
     def on_source_changed(self, index):
-        sources = ['generator', 'audio', 'serial']
+        sources = ['serial', 'generator', 'audio']
         source = sources[index]
         
         # Siempre detener worker de adquisición anterior antes de cambiar
@@ -475,6 +596,13 @@ class MainWindow(QMainWindow):
         self.orchestrator.data_acquired.connect(self.update_input_plot)
         self.orchestrator.data_processed.connect(self.update_output_plot)
         self.orchestrator.error_occurred.connect(self.show_error)
+        
+        # Conectar zoom/pan de los plots
+        plots = [self.input_plot, self.output_plot, self.combined_plot, self.fft_time_plot]
+        for p in plots:
+            p.getViewBox().sigRangeChanged.connect(self.on_plot_range_changed)
+            
+        self.fft_freq_plot.getViewBox().sigRangeChanged.connect(self.on_fft_plot_range_changed)
         
         # Escaneo inicial de puertos
         self.refresh_serial_ports()
@@ -765,46 +893,215 @@ class MainWindow(QMainWindow):
             }
         """)
 
-    def toggle_fft_visibility(self, checked):
-        """Muestra u oculta el gráfico de FFT."""
-        self.show_fft = checked
-        self.fft_plot.setVisible(checked)
     
-    def toggle_scatter_mode(self, checked):
-        """Alterna entre modo línea y modo scatter."""
-        self.scatter_mode = checked
-    
-    def on_y_range_changed(self, value):
+    def on_y_range_changed(self, *args):
         """Actualiza el rango Y de los gráficos de tiempo."""
-        y_max = value
-        y_min = -y_max
-        self.lbl_y_min.setText(f"{-y_max:.1f}")
-        self.lbl_y_max.setText(f"{y_max:.1f}")
+        self._apply_y_range_to_all()
+    
+    def on_x_range_changed(self, *args):
+        """Actualiza la cantidad de muestras visibles en X."""
+        self._apply_x_range_to_all()
         
+    def on_fft_y_range_changed(self, *args):
+        """Actualiza el rango Y del gráfico FFT."""
+        self._apply_fft_y_range()
+        
+    def on_fft_x_range_changed(self, *args):
+        """Actualiza el rango X del gráfico FFT."""
+        self._apply_fft_x_range()
+        
+    def _set_plot_signals_blocked(self, block):
+        plots = [self.input_plot, self.output_plot, self.combined_plot, self.fft_time_plot, self.fft_freq_plot]
+        for p in plots:
+            p.getViewBox().blockSignals(block)
+
+    def on_plot_range_changed(self, view_box, range_obj):
+        x_range, y_range = range_obj
+        
+        self.spin_x_min.blockSignals(True)
+        self.spin_x_max.blockSignals(True)
+        self.spin_y_min.blockSignals(True)
+        self.spin_y_max.blockSignals(True)
+        
+        self.spin_x_min.setValue(int(x_range[0]))
+        self.spin_x_max.setValue(int(x_range[1]))
+        self.spin_y_min.setValue(float(y_range[0]))
+        self.spin_y_max.setValue(float(y_range[1]))
+        
+        self.spin_x_min.blockSignals(False)
+        self.spin_x_max.blockSignals(False)
+        self.spin_y_min.blockSignals(False)
+        self.spin_y_max.blockSignals(False)
+        
+        self._apply_x_range_to_all()
+        self._apply_y_range_to_all()
+
+    def on_fft_plot_range_changed(self, view_box, range_obj):
+        x_range, y_range = range_obj
+        self.fft_spin_x_min.blockSignals(True)
+        self.fft_spin_x_max.blockSignals(True)
+        self.fft_spin_y_min.blockSignals(True)
+        self.fft_spin_y_max.blockSignals(True)
+        self.fft_spin_x_min.setValue(float(x_range[0]))
+        self.fft_spin_x_max.setValue(float(x_range[1]))
+        self.fft_spin_y_min.setValue(float(y_range[0]))
+        self.fft_spin_y_max.setValue(float(y_range[1]))
+        self.fft_spin_x_min.blockSignals(False)
+        self.fft_spin_x_max.blockSignals(False)
+        self.fft_spin_y_min.blockSignals(False)
+        self.fft_spin_y_max.blockSignals(False)
+        self._apply_fft_x_range()
+        self._apply_fft_y_range()
+
+    def _apply_y_range_to_all(self):
+        y_min = self.spin_y_min.value()
+        y_max = self.spin_y_max.value()
+        if y_min >= y_max:
+            return
+        
+        self._set_plot_signals_blocked(True)
         # Actualizar todos los gráficos de tiempo
         self.input_plot.setYRange(y_min, y_max)
         self.output_plot.setYRange(y_min, y_max)
         self.combined_plot.setYRange(y_min, y_max)
-    
-    def on_x_range_changed(self, value):
-        """Actualiza la cantidad de muestras visibles en X."""
-        self.display_size = value
-        # Actualizar el rango del eje X
-        self.input_plot.setXRange(0, value)
-        self.output_plot.setXRange(0, value)
-        self.combined_plot.setXRange(0, value)
+        self.fft_time_plot.setYRange(y_min, y_max)
+        self._set_plot_signals_blocked(False)
+        
+    def _apply_fft_y_range(self):
+        y_min = self.fft_spin_y_min.value()
+        y_max = self.fft_spin_y_max.value()
+        if y_min >= y_max:
+            return
+        self.fft_freq_plot.getViewBox().blockSignals(True)
+        self.fft_freq_plot.setYRange(y_min, y_max)
+        self.fft_freq_plot.getViewBox().blockSignals(False)
 
-    def _ensure_curves(self, num_channels, plot_widget, curve_list, base_pen, name_prefix=None):
-        while len(curve_list) < num_channels:
-            color = base_pen.color()
-            color = color.lighter(100 + len(curve_list) * 20)
-            pen = pg.mkPen(color=color, width=base_pen.width())
-            name = f"{name_prefix} {len(curve_list)+1}" if name_prefix else None
-            curve = plot_widget.plot(pen=pen, clipToView=True, autoDownsample=True, name=name)
-            curve_list.append(curve)
-        while len(curve_list) > num_channels:
-            curve = curve_list.pop()
-            plot_widget.removeItem(curve)
+    def _apply_fft_x_range(self):
+        x_min = self.fft_spin_x_min.value()
+        x_max = self.fft_spin_x_max.value()
+        if x_min >= x_max:
+            return
+        self.fft_freq_plot.getViewBox().blockSignals(True)
+        self.fft_freq_plot.setXRange(x_min, x_max)
+        self.fft_freq_plot.getViewBox().blockSignals(False)
+        
+    def _apply_x_range_to_all(self):
+        x_min = self.spin_x_min.value()
+        x_max = self.spin_x_max.value()
+        if x_min >= x_max:
+            return
+            
+        self.display_size = x_max
+        self._set_plot_signals_blocked(True)
+        # Actualizar el rango del eje X
+        self.input_plot.setXRange(x_min, x_max)
+        self.output_plot.setXRange(x_min, x_max)
+        self.combined_plot.setXRange(x_min, x_max)
+        self.fft_time_plot.setXRange(x_min, x_max)
+        self._set_plot_signals_blocked(False)
+        
+    def auto_adjust_y(self):
+        try:
+            in_data = self.input_buffer[-self.display_size:] if len(self.input_buffer) > 0 else []
+            out_data = self.output_buffer[-self.display_size:] if len(self.output_buffer) > 0 else []
+            all_data = np.concatenate([d for d in (in_data, out_data) if len(d) > 0])
+            
+            if len(all_data) == 0:
+                return
+                
+            min_y = float(np.min(all_data))
+            max_y = float(np.max(all_data))
+            
+            if min_y == max_y:
+                min_y -= 1.0
+                max_y += 1.0
+                
+            margin = (max_y - min_y) * 0.1
+            self.spin_y_min.blockSignals(True)
+            self.spin_y_max.blockSignals(True)
+            self.spin_y_min.setValue(min_y - margin)
+            self.spin_y_max.setValue(max_y + margin)
+            self.spin_y_min.blockSignals(False)
+            self.spin_y_max.blockSignals(False)
+            self._apply_y_range_to_all()
+        except Exception as e:
+            print(f"Error en auto_adjust_y: {e}")
+
+    def auto_adjust_fft_y(self):
+        try:
+            max_y = -1e9
+            min_y = 1e9
+            has_data = False
+            for curve in self.fft_freq_curves:
+                if curve.isVisible() and curve.yData is not None and len(curve.yData) > 0:
+                    c_max = float(np.max(curve.yData))
+                    c_min = float(np.min(curve.yData))
+                    if c_max > max_y: max_y = c_max
+                    if c_min < min_y: min_y = c_min
+                    has_data = True
+            
+            if not has_data:
+                return
+                
+            if min_y == max_y:
+                max_y += 1.0
+                
+            margin = (max_y - min_y) * 0.1
+            if margin == 0:
+                margin = 0.1
+            
+            self.fft_spin_y_min.blockSignals(True)
+            self.fft_spin_y_max.blockSignals(True)
+            self.fft_spin_y_min.setValue(min_y - margin)
+            self.fft_spin_y_max.setValue(max_y + margin)
+            self.fft_spin_y_min.blockSignals(False)
+            self.fft_spin_y_max.blockSignals(False)
+            self._apply_fft_y_range()
+        except Exception as e:
+            print(f"Error en auto_adjust_fft_y: {e}")
+
+    def auto_adjust_fft_x(self):
+        try:
+            max_x = -1e9
+            min_x = 1e9
+            has_data = False
+            for curve in self.fft_freq_curves:
+                if curve.isVisible() and curve.xData is not None and len(curve.xData) > 0:
+                    c_max = float(np.max(curve.xData))
+                    c_min = float(np.min(curve.xData))
+                    if c_max > max_x: max_x = c_max
+                    if c_min < min_x: min_x = c_min
+                    has_data = True
+            
+            if not has_data:
+                return
+                
+            if min_x == max_x:
+                max_x += 1.0
+                
+            margin = (max_x - min_x) * 0.05
+            if margin == 0:
+                margin = 0.1
+            
+            self.fft_spin_x_min.blockSignals(True)
+            self.fft_spin_x_max.blockSignals(True)
+            self.fft_spin_x_min.setValue(min_x - margin)
+            self.fft_spin_x_max.setValue(max_x + margin)
+            self.fft_spin_x_min.blockSignals(False)
+            self.fft_spin_x_max.blockSignals(False)
+            self._apply_fft_x_range()
+        except Exception as e:
+            print(f"Error en auto_adjust_fft_x: {e}")
+            
+    def auto_adjust_x(self):
+        self.spin_x_min.blockSignals(True)
+        self.spin_x_max.blockSignals(True)
+        self.spin_x_min.setValue(0)
+        self.spin_x_max.setValue(self.display_size)
+        self.spin_x_min.blockSignals(False)
+        self.spin_x_max.blockSignals(False)
+        self._apply_x_range_to_all()
+
 
     def _update_buffer(self, buffer, data):
         if data.ndim == 1:
@@ -825,40 +1122,24 @@ class MainWindow(QMainWindow):
         if display_data.ndim == 1:
             display_data = display_data.reshape(-1, 1)
             
-        num_channels = display_data.shape[1]
+        num_channels = min(display_data.shape[1], self.max_channels)
         is_xy_mode = (self.orchestrator.current_source == 'serial' and self.orchestrator.serial_in.mode == 'xy_colon')
 
         if is_xy_mode:
-            self._ensure_curves(1, plot_widget, curves_list, base_pen)
-            self._ensure_curves(1, combined_plot_widget, combined_curves_list, base_pen, name_prefix)
-            
             # Ocultar curvas adicionales
-            for i in range(1, len(curves_list)):
+            for i in range(1, self.max_channels):
                 curves_list[i].setData([], [])
                 combined_curves_list[i].setData([], [])
+                curves_list[i].setVisible(False)
+                combined_curves_list[i].setVisible(False)
                 
             i = 0
-            current_symbol = curves_list[i].opts.get('symbol', None)
             color = base_pen.color()
-            if self.scatter_mode:
-                if current_symbol != 'o':
-                    curves_list[i].setPen(pg.mkPen(None))
-                    curves_list[i].setSymbol('o')
-                    curves_list[i].setSymbolSize(3)
-                    combined_curves_list[i].setPen(pg.mkPen(None))
-                    combined_curves_list[i].setSymbol('o')
-                    combined_curves_list[i].setSymbolSize(3)
-                curves_list[i].setSymbolBrush(color)
-                curves_list[i].setSymbolPen(color)
-                combined_curves_list[i].setSymbolBrush(color)
-                combined_curves_list[i].setSymbolPen(color)
-            else:
-                if current_symbol is not None:
-                    pen = pg.mkPen(color=color, width=base_pen.width())
-                    curves_list[i].setPen(pen)
-                    curves_list[i].setSymbol(None)
-                    combined_curves_list[i].setPen(pen)
-                    combined_curves_list[i].setSymbol(None)
+            pen = pg.mkPen(color=color, width=base_pen.width())
+            curves_list[i].setPen(pen)
+            combined_curves_list[i].setPen(pen)
+            curves_list[i].setVisible(True)
+            combined_curves_list[i].setVisible(True)
                 
             if num_channels >= 2:
                 sort_idx = np.argsort(display_data[:, 0])
@@ -866,10 +1147,12 @@ class MainWindow(QMainWindow):
                 combined_curves_list[i].setData(x=display_data[sort_idx, 0], y=display_data[sort_idx, 1])
             return
 
-        self._ensure_curves(num_channels, plot_widget, curves_list, base_pen)
-        self._ensure_curves(num_channels, combined_plot_widget, combined_curves_list, base_pen, name_prefix)
-        
-        for i in range(num_channels):
+        for i in range(self.max_channels):
+            if i >= num_channels:
+                curves_list[i].setVisible(False)
+                combined_curves_list[i].setVisible(False)
+                continue
+                
             # Check visibility from configs, default to True if missing
             visible = True
             if i in self.channel_configs:
@@ -881,34 +1164,82 @@ class MainWindow(QMainWindow):
             if not visible:
                 continue
                 
-            current_symbol = curves_list[i].opts.get('symbol', None)
-            
             if i in self.channel_configs and 'color' in self.channel_configs[i]:
                 color = self.channel_configs[i]['color']
             else:
                 color = base_pen.color().lighter(100 + i * 20)
                 
-            if self.scatter_mode:
-                if current_symbol != 'o':
-                    curves_list[i].setPen(pg.mkPen(None))
-                    curves_list[i].setSymbol('o')
-                    curves_list[i].setSymbolSize(3)
-                    combined_curves_list[i].setPen(pg.mkPen(None))
-                    combined_curves_list[i].setSymbol('o')
-                    combined_curves_list[i].setSymbolSize(3)
-                curves_list[i].setSymbolBrush(color)
-                curves_list[i].setSymbolPen(color)
-                combined_curves_list[i].setSymbolBrush(color)
-                combined_curves_list[i].setSymbolPen(color)
-            else:
-                pen = pg.mkPen(color=color, width=base_pen.width())
-                curves_list[i].setPen(pen)
-                curves_list[i].setSymbol(None)
-                combined_curves_list[i].setPen(pen)
-                combined_curves_list[i].setSymbol(None)
+            pen = pg.mkPen(color=color, width=base_pen.width())
+            curves_list[i].setPen(pen)
+            combined_curves_list[i].setPen(pen)
                 
             curves_list[i].setData(display_data[:, i])
             combined_curves_list[i].setData(display_data[:, i])
+
+    def _plot_fft_tab(self, display_data):
+        if display_data.ndim == 1:
+            display_data = display_data.reshape(-1, 1)
+            
+        num_channels = min(display_data.shape[1], self.max_channels)
+        
+        # Plot Time Data
+        for i in range(self.max_channels):
+            if i >= num_channels:
+                self.fft_time_curves[i].setVisible(False)
+                continue
+
+            visible = True
+            if i in self.channel_configs:
+                visible = self.channel_configs[i].get('visible', True)
+            self.fft_time_curves[i].setVisible(visible)
+            if not visible:
+                continue
+                
+            if i in self.channel_configs and 'color' in self.channel_configs[i]:
+                color = self.channel_configs[i]['color']
+            else:
+                color = self.pen_input.color().lighter(100 + i * 20)
+                
+            pen = pg.mkPen(color=color, width=self.pen_input.width())
+            self.fft_time_curves[i].setPen(pen)
+            self.fft_time_curves[i].setData(display_data[:, i])
+            
+        # Plot Frequency Data
+        n = display_data.shape[0]
+        fs = getattr(self.orchestrator, 'sample_rate', 44100)
+        
+        if n > 0:
+            freqs = np.fft.rfftfreq(n, d=1.0/fs)
+            # Handle 0 Hz for log scale
+            if len(freqs) > 1:
+                freqs[0] = freqs[1] / 10.0
+            else:
+                freqs[0] = 1e-3
+                
+            for i in range(self.max_channels):
+                if i >= num_channels:
+                    self.fft_freq_curves[i].setVisible(False)
+                    continue
+
+                visible = True
+                if i in self.channel_configs:
+                    visible = self.channel_configs[i].get('visible', True)
+                self.fft_freq_curves[i].setVisible(visible)
+                if not visible:
+                    continue
+                    
+                if i in self.channel_configs and 'color' in self.channel_configs[i]:
+                    color = self.channel_configs[i]['color']
+                else:
+                    color = self.pen_input.color().lighter(100 + i * 20)
+                    
+                pen = pg.mkPen(color=color, width=self.pen_input.width())
+                self.fft_freq_curves[i].setPen(pen)
+                
+                # Compute FFT explicitly
+                fft_mag = np.abs(np.fft.rfft(display_data[:, i])) / n
+                
+                self.fft_freq_curves[i].setData(x=freqs, y=fft_mag)
 
     @pyqtSlot(object)
     def update_input_plot(self, data):
@@ -922,81 +1253,13 @@ class MainWindow(QMainWindow):
         self.input_buffer = self._update_buffer(self.input_buffer, data)
         display_data = self.input_buffer[-self.display_size:]
         self._plot_multi_channel(display_data, self.input_curves, self.combined_input_curves, self.input_plot, self.combined_plot, self.pen_input, '<span style="color: #f0e68c;">●</span> Entrada')
+        self._plot_fft_tab(display_data)
 
     @pyqtSlot(object)
     def update_output_plot(self, data):
         self.output_buffer = self._update_buffer(self.output_buffer, data)
         display_data = self.output_buffer[-self.display_size:]
         self._plot_multi_channel(display_data, self.output_curves, self.combined_output_curves, self.output_plot, self.combined_plot, self.pen_output, '<span style="color: #00d9ff;">●</span> Salida')
-        
-        self.update_fft(display_data)
-
-    def update_fft(self, data):
-        """Calcula y grafica la FFT de los datos locales con enventanado y suavizado."""
-        try:
-            if data.ndim > 1:
-                data = data[:, 0]
-            n = len(data)
-            if n < 2: return
-            
-            window = np.hanning(n)
-            windowed_data = data * window
-            
-            freqs = np.fft.rfftfreq(n, d=1/self.orchestrator.sample_rate)
-            mag = np.abs(np.fft.rfft(windowed_data))
-            
-            mag_db = 20 * np.log10(mag + 1e-6)
-            
-            if self.fft_smoothed is None or len(self.fft_smoothed) != len(mag_db):
-                self.fft_smoothed = mag_db
-            else:
-                self.fft_smoothed = self.fft_alpha * mag_db + (1 - self.fft_alpha) * self.fft_smoothed
-            
-            self._ensure_curves(1, self.fft_plot, self.fft_curves, self.pen_fft)
-            
-            current_symbol = self.fft_curves[0].opts.get('symbol', None)
-            color = self.pen_fft.color()
-            if self.scatter_mode:
-                if current_symbol != 'o':
-                    self.fft_curves[0].setPen(pg.mkPen(None))
-                    self.fft_curves[0].setSymbol('o')
-                    self.fft_curves[0].setSymbolSize(3)
-                self.fft_curves[0].setSymbolBrush(color)
-                self.fft_curves[0].setSymbolPen(color)
-            else:
-                if current_symbol is not None:
-                    self.fft_curves[0].setPen(self.pen_fft)
-                    self.fft_curves[0].setSymbol(None)
-                    
-            self.fft_curves[0].setData(freqs[1:], self.fft_smoothed[1:])
-        except Exception as e:
-            print(f"Error en FFT: {e}")
-
-    def _update_fft_from_serial(self, data):
-        """Actualiza FFT desde datos seriales que contienen x,y directamente."""
-        x = []
-        y = []
-        if isinstance(data, np.ndarray):
-            for d in data:
-                if isinstance(d, tuple) and len(d) >= 2:
-                    x.append(d[0])
-                    y.append(d[1])
-        if x:
-            self._ensure_curves(1, self.fft_plot, self.fft_curves, self.pen_fft)
-            current_symbol = self.fft_curves[0].opts.get('symbol', None)
-            color = self.pen_fft.color()
-            if self.scatter_mode:
-                if current_symbol != 'o':
-                    self.fft_curves[0].setPen(pg.mkPen(None))
-                    self.fft_curves[0].setSymbol('o')
-                    self.fft_curves[0].setSymbolSize(3)
-                self.fft_curves[0].setSymbolBrush(color)
-                self.fft_curves[0].setSymbolPen(color)
-            else:
-                if current_symbol is not None:
-                    self.fft_curves[0].setPen(self.pen_fft)
-                    self.fft_curves[0].setSymbol(None)
-            self.fft_curves[0].setData(x, y)
 
     def on_load_plugin_clicked(self):
         file_path, _ = QFileDialog.getOpenFileName(
